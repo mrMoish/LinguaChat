@@ -12,7 +12,7 @@ app = FastAPI()
 # Разрешаем запросы с фронтенда
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["trachat.vercel.app",
+    allow_origins=["https://trachat.vercel.app",
                    "https://linguachat-x26d.onrender.com",
                    "http://localhost:5173"],
     allow_credentials=True,
