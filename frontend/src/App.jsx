@@ -13,28 +13,24 @@ function App() {
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
     }
   }, [messages]);
-
+  
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
 
+    // Создаем только одно сообщение пользователя, без истории
     const userMessage = { role: 'user', content: input };
-    const newMessages = [...messages, userMessage];
-    setMessages(newMessages);
+    // Обратите внимание: вместо [...messages, userMessage] мы берем [userMessage]
+    setMessages([userMessage]); 
     setInput('');
     setIsLoading(true);
 
     try {
-      // Используем относительный путь /api/chat. 
-      // Vite proxy перенаправит на localhost:8000 при разработке.
-      // На Render фронтенд и бэкенд можно разместить на одном домене или использовать переменные окружения.
-      const backendUrl = import.meta.env.VITE_BACKEND_URL || ''; 
-      
-      const response = await fetch(`${backendUrl}/api/chat`, {
+      const response = await fetch(`/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: input,
-          history: messages
+          message: input
+          // поле history больше не отправляем
         }),
       });
 
