@@ -62,7 +62,7 @@ function App() {
   return (
     <div className="app-container">
       <header className="chat-header">
-        <h1>ИИ Переводчик</h1>
+        <h1>TraChat</h1>
       </header>
       
       <div className="chat-container" ref={chatContainerRef}>
