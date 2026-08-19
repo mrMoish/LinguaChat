@@ -1,7 +1,7 @@
 :root {
-  --bg-color: #ffffff; /* Основной фон */
+  --bg-color: #ffffff; 
   --text-color: #1d1d1f;
-  --user-bubble: #f1f1f1; /* Светло-серый для пользователя */
+  --user-bubble: #f1f1f1; 
   --border-color: #e5e5e5;
   --accent-color: #007aff;
 }
@@ -13,11 +13,10 @@
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; 
 }
 
-/* Контейнер приложения */
 .app-container {
   display: flex;
   flex-direction: column;
-  height: 100vh; /* Для мобильных браузеров с учетом панели */
+  height: 100vh; 
   height: 100dvh; 
   max-width: 768px;
   margin: 0 auto;
@@ -25,17 +24,15 @@
   position: relative;
 }
 
-/* Состояние, когда истории нет (центрируем форму) */
 .empty-state-app {
   justify-content: center;
 }
 
-/* Состояние, когда чат активен (форма внизу) */
 .chat-active-app {
   justify-content: flex-end;
 }
 
-/* Кнопка Войти */
+/* Кнопка Войти (Более округлая) */
 .login-btn {
   position: fixed;
   top: 15px;
@@ -44,8 +41,8 @@
   background-color: #333333;
   color: #ffffff;
   border: none;
-  padding: 8px 16px;
-  border-radius: 6px;
+  padding: 10px 20px;
+  border-radius: 20px; /* Сильное скругление */
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
@@ -56,16 +53,14 @@
   background-color: #555555;
 }
 
-/* Контейнер для сообщений */
 .chat-container {
   flex: 1;
   overflow-y: auto;
-  padding: 70px 1rem 1rem 1rem; /* 70px сверху, чтобы не перекрывалось кнопкой "Войти" */
+  padding: 70px 1rem 1rem 1rem; 
   display: flex;
   flex-direction: column;
 }
 
-/* Обертка сообщения */
 .message-wrapper {
   display: flex;
   margin-bottom: 1.5rem;
@@ -74,7 +69,6 @@
 .message-wrapper.user { justify-content: flex-end; }
 .message-wrapper.assistant { justify-content: flex-start; }
 
-/* Сообщение пользователя (светло-серый пузырь) */
 .message.user {
   max-width: 85%;
   padding: 0.8rem 1rem;
@@ -83,20 +77,18 @@
   border-radius: 18px;
   border-bottom-right-radius: 4px;
   word-wrap: break-word;
-  white-space: pre-wrap; /* СОХРАНЕНИЕ ПЕРЕНОСОВ СТРОК */
+  white-space: pre-wrap; 
   box-shadow: 0 1px 2px rgba(0,0,0,0.05);
 }
 
-/* Сообщение ИИ (без контейнера, на основном фоне) */
 .message.assistant {
   max-width: 100%;
   color: var(--text-color);
   word-wrap: break-word;
-  white-space: pre-wrap; /* СОХРАНЕНИЕ ПЕРЕНОСОВ СТРОК */
+  white-space: pre-wrap; 
   line-height: 1.6;
 }
 
-/* Анимация загрузки (тоже без контейнера) */
 .message.typing { display: flex; gap: 4px; align-items: center; padding: 10px 0; }
 .message.typing span { width: 8px; height: 8px; background: #ccc; border-radius: 50%; animation: bounce 1s infinite ease-in-out; }
 .message.typing span:nth-child(2) { animation-delay: 0.2s; }
@@ -106,35 +98,49 @@
 /* Область ввода */
 .input-area {
   display: flex;
-  gap: 10px;
+  gap: 12px;
   padding: 1rem;
   background-color: var(--bg-color);
   width: 100%;
 }
 
+/* Поле ввода (Более округлое) */
 .input-area textarea {
   flex: 1;
-  padding: 0.8rem 1rem;
+  padding: 0.85rem 1.25rem;
   border: 1px solid var(--border-color);
-  border-radius: 12px;
+  border-radius: 24px; /* Сильное скругление */
   resize: none;
   outline: none;
   max-height: 120px;
   font-size: 1rem;
   font-family: inherit;
   line-height: 1.4;
+  /* Фиксированная минимальная высота, чтобы кнопка всегда была одного размера с полем */
+  min-height: 48px; 
 }
 
+/* Кнопка отправки (Круглая, с иконкой) */
 .input-area .send-btn {
-  padding: 0 1.5rem;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 48px;
+  height: 48px; /* Фиксированная высота и ширина */
+  min-width: 48px;
+  padding: 0;
   background-color: var(--accent-color);
   color: #fff;
   border: none;
-  border-radius: 12px;
+  border-radius: 50%; /* Идеальный круг */
   cursor: pointer;
-  font-weight: 600;
-  transition: background 0.2s;
-  align-self: flex-end; /* Прижимаем кнопку к низу, если textarea увеличивается в высоту */
+  transition: background 0.2s, transform 0.1s;
+  align-self: flex-end; /* Прижимаем к нижней линии поля ввода */
+  margin-bottom: 1px; /* Тонкая подгонка, чтобы визуально было ровно */
+}
+
+.input-area .send-btn:active {
+  transform: scale(0.95);
 }
 
 .input-area .send-btn:disabled { 
