@@ -13,7 +13,8 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["trachat.vercel.app",
-                  "http://localhost:5173"], # В проде укажите ваш домен фронтенда
+                   "https://linguachat-x26d.onrender.com",
+                   "http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
