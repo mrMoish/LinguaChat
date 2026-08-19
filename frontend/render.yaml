@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: chat-frontend
+    runtime: static
+    plan: free
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./dist
+    envVars:
+      - key: VITE_BACKEND_URL
+        value: https://ВАШ-БЭКЕНД-АДРЕС.onrender.com # Обновите после деплоя бэкенда
