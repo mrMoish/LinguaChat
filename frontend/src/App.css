@@ -32,7 +32,7 @@
   justify-content: flex-end;
 }
 
-/* Кнопка Войти (Более округлая) */
+/* Кнопка Войти */
 .login-btn {
   position: fixed;
   top: 15px;
@@ -42,7 +42,7 @@
   color: #ffffff;
   border: none;
   padding: 10px 20px;
-  border-radius: 20px; /* Сильное скругление */
+  border-radius: 20px; 
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
@@ -69,9 +69,10 @@
 .message-wrapper.user { justify-content: flex-end; }
 .message-wrapper.assistant { justify-content: flex-start; }
 
+/* Сообщение пользователя (Увеличены отступы) */
 .message.user {
   max-width: 85%;
-  padding: 0.8rem 1rem;
+  padding: 1.1rem 1.4rem; /* БЫЛО 0.8rem 1rem - УВЕЛИЧЕНО */
   background-color: var(--user-bubble);
   color: var(--text-color);
   border-radius: 18px;
@@ -95,48 +96,48 @@
 .message.typing span:nth-child(3) { animation-delay: 0.4s; }
 @keyframes bounce { 0%, 80%, 100% { transform: translateY(0); } 40% { transform: translateY(-8px); } }
 
-/* Область ввода */
+/* Область ввода (Убран фон) */
 .input-area {
   display: flex;
   gap: 12px;
   padding: 1rem;
-  background-color: var(--bg-color);
+  /* background-color: var(--bg-color); - УБРАНО */
   width: 100%;
 }
 
-/* Поле ввода (Более округлое) */
+/* Поле ввода */
 .input-area textarea {
   flex: 1;
   padding: 0.85rem 1.25rem;
   border: 1px solid var(--border-color);
-  border-radius: 24px; /* Сильное скругление */
+  border-radius: 24px; 
   resize: none;
   outline: none;
   max-height: 120px;
   font-size: 1rem;
   font-family: inherit;
   line-height: 1.4;
-  /* Фиксированная минимальная высота, чтобы кнопка всегда была одного размера с полем */
   min-height: 48px; 
+  background-color: #ffffff; /* Добавлен белый фон самому полю, чтобы текст не накладывался при прокрутке */
 }
 
-/* Кнопка отправки (Круглая, с иконкой) */
+/* Кнопка отправки */
 .input-area .send-btn {
   display: flex;
   justify-content: center;
   align-items: center;
   width: 48px;
-  height: 48px; /* Фиксированная высота и ширина */
+  height: 48px; 
   min-width: 48px;
   padding: 0;
   background-color: var(--accent-color);
   color: #fff;
   border: none;
-  border-radius: 50%; /* Идеальный круг */
+  border-radius: 50%; 
   cursor: pointer;
   transition: background 0.2s, transform 0.1s;
-  align-self: flex-end; /* Прижимаем к нижней линии поля ввода */
-  margin-bottom: 1px; /* Тонкая подгонка, чтобы визуально было ровно */
+  align-self: flex-end; 
+  margin-bottom: 1px; 
 }
 
 .input-area .send-btn:active {
