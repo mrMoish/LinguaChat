@@ -8,4 +8,4 @@ services:
     staticPublishPath: ./dist
     envVars:
       - key: VITE_BACKEND_URL
-        value: https://ВАШ-БЭКЕНД-АДРЕС.onrender.com # Обновите после деплоя бэкенда
+        value: https://backendlinguachat.onrender.com # Обновите после деплоя бэкенда
