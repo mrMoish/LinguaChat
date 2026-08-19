@@ -13,24 +13,26 @@ function App() {
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
     }
   }, [messages]);
-  
+
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
 
-    // Создаем только одно сообщение пользователя, без истории
     const userMessage = { role: 'user', content: input };
-    // Обратите внимание: вместо [...messages, userMessage] мы берем [userMessage]
-    setMessages([userMessage]); 
+    // 1. Сохраняем текущую историю и добавляем новое сообщение пользователя на экран
+    const newMessages = [...messages, userMessage];
+    setMessages(newMessages);
     setInput('');
     setIsLoading(true);
 
     try {
-      const response = await fetch(`/api/chat`, {
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || ''; 
+      
+      const response = await fetch(`${backendUrl}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          // ОТПРАВЛЯЕМ ТОЛЬКО ТЕКУЩИЙ ТЕКСТ! Историю (messages) НЕ отправляем.
           message: input
-          // поле history больше не отправляем
         }),
       });
 
@@ -38,6 +40,8 @@ function App() {
       
       const data = await response.json();
       const aiMessage = { role: 'assistant', content: data.reply };
+      
+      // 2. Добавляем ответ переводчика в локальную историю на клиенте
       setMessages([...newMessages, aiMessage]);
     } catch (error) {
       console.error('Error:', error);
@@ -58,13 +62,13 @@ function App() {
   return (
     <div className="app-container">
       <header className="chat-header">
-        <h1>AI Чат</h1>
+        <h1>ИИ Переводчик</h1>
       </header>
       
       <div className="chat-container" ref={chatContainerRef}>
         {messages.length === 0 && (
           <div className="empty-state">
-            <p>Начните диалог с DeepSeek прямо сейчас!</p>
+            <p>Введите текст на любом языке для перевода на русский.</p>
           </div>
         )}
         
@@ -90,12 +94,12 @@ function App() {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Напишите сообщение..."
+          placeholder="Введите текст для перевода..."
           rows={1}
           disabled={isLoading}
         />
         <button onClick={handleSend} disabled={!input.trim() || isLoading}>
-          Отправить
+          Перевести
         </button>
       </div>
     </div>
