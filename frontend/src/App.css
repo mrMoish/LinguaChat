@@ -104,7 +104,6 @@
   display: flex;
   gap: 12px;
   padding: 1rem;
-  background-color: var(--bg-color); /* Сплошной фон, чтобы текст не просвечивал */
   width: 100%;
   z-index: 20;
 }
