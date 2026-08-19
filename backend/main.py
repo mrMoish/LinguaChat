@@ -12,7 +12,8 @@ app = FastAPI()
 # Разрешаем запросы с фронтенда
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # В проде укажите ваш домен фронтенда
+    allow_origins=["trachat.vercel.app",
+                  "http://localhost:5173"], # В проде укажите ваш домен фронтенда
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -20,7 +21,7 @@ app.add_middleware(
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 # В OpenRouter DeepSeek V3 называется так (иногда добавляют :free)
-MODEL_NAME = "deepseek/deepseek-chat" 
+MODEL_NAME = "deepseek/deepseek-v4-flash" 
 
 class ChatRequest(BaseModel):
     message: str
