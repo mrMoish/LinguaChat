@@ -12,13 +12,12 @@ function App() {
     if (chatContainerRef.current) {
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
     }
-  }, [messages]);
+  }, [messages, isLoading]);
 
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
 
     const userMessage = { role: 'user', content: input };
-    // 1. Сохраняем текущую историю и добавляем новое сообщение пользователя на экран
     const newMessages = [...messages, userMessage];
     setMessages(newMessages);
     setInput('');
@@ -31,7 +30,6 @@ function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          // ОТПРАВЛЯЕМ ТОЛЬКО ТЕКУЩИЙ ТЕКСТ! Историю (messages) НЕ отправляем.
           message: input
         }),
       });
@@ -40,12 +38,10 @@ function App() {
       
       const data = await response.json();
       const aiMessage = { role: 'assistant', content: data.reply };
-      
-      // 2. Добавляем ответ переводчика в локальную историю на клиенте
       setMessages([...newMessages, aiMessage]);
     } catch (error) {
       console.error('Error:', error);
-      const errorMessage = { role: 'assistant', content: 'Извините, произошла ошибка. Попробуйте позже.' };
+      const errorMessage = { role: 'assistant', content: 'Ошибка перевода. Попробуйте позже.' };
       setMessages([...newMessages, errorMessage]);
     } finally {
       setIsLoading(false);
@@ -60,35 +56,34 @@ function App() {
   };
 
   return (
-    <div className="app-container">
-      <header className="chat-header">
-        <h1>TraChat</h1>
-      </header>
+    <div className={`app-container ${messages.length === 0 ? 'empty-state-app' : 'chat-active-app'}`}>
       
-      <div className="chat-container" ref={chatContainerRef}>
-        {messages.length === 0 && (
-          <div className="empty-state">
-            <p>Введите текст на любом языке для перевода на русский.</p>
-          </div>
-        )}
-        
-        {messages.map((msg, idx) => (
-          <div key={idx} className={`message-wrapper ${msg.role}`}>
-            <div className={`message ${msg.role}`}>
-              {msg.content}
-            </div>
-          </div>
-        ))}
-        
-        {isLoading && (
-          <div className="message-wrapper assistant">
-            <div className="message assistant typing">
-              <span></span><span></span><span></span>
-            </div>
-          </div>
-        )}
-      </div>
+      {/* Фиксированная кнопка Войти */}
+      <button className="login-btn">Войти</button>
 
+      {/* Контейнер чата (скрыт, пока нет сообщений) */}
+      {messages.length > 0 && (
+        <div className="chat-container" ref={chatContainerRef}>
+          {messages.map((msg, idx) => (
+            <div key={idx} className={`message-wrapper ${msg.role}`}>
+              {/* Используем pre-wrap в CSS для переноса строк */}
+              <div className={`message ${msg.role}`}>
+                {msg.content}
+              </div>
+            </div>
+          ))}
+          
+          {isLoading && (
+            <div className="message-wrapper assistant">
+              <div className="message assistant typing">
+                <span></span><span></span><span></span>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Область ввода */}
       <div className="input-area">
         <textarea
           value={input}
@@ -98,7 +93,7 @@ function App() {
           rows={1}
           disabled={isLoading}
         />
-        <button onClick={handleSend} disabled={!input.trim() || isLoading}>
+        <button onClick={handleSend} disabled={!input.trim() || isLoading} className="send-btn">
           Перевести
         </button>
       </div>
