@@ -14,7 +14,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://trachat.vercel.app",
                    "https://linguachat-x26d.onrender.com",
-                   "http://localhost:5173"],
+                   "http://localhost:5173",
+                   "http://127.0.0.1:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -26,7 +27,6 @@ MODEL_NAME = "deepseek/deepseek-v4-flash"
 
 class ChatRequest(BaseModel):
     message: str
-    history: list[dict] = []
 
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
@@ -34,8 +34,7 @@ async def chat(request: ChatRequest):
         raise HTTPException(status_code=500, detail="OpenRouter API Key not configured")
 
     # Формируем историю сообщений для OpenRouter
-    messages = [{"role": "system", "content": "Ты полезный ИИ-ассистент."}]
-    messages.extend(request.history)
+    messages = [{"role": "system", "content": "You are a professional translator. Your task is to translate any provided text into Russian."}]
     messages.append({"role": "user", "content": request.message})
 
     headers = {
