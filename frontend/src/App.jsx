@@ -7,7 +7,6 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const chatContainerRef = useRef(null);
 
-  // Прокрутка вниз при новом сообщении
   useEffect(() => {
     if (chatContainerRef.current) {
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
@@ -58,10 +57,8 @@ function App() {
   return (
     <div className={`app-container ${messages.length === 0 ? 'empty-state-app' : 'chat-active-app'}`}>
       
-      {/* Фиксированная кнопка Войти */}
       <button className="login-btn">Войти</button>
 
-      {/* Контейнер чата (скрыт, пока нет сообщений) */}
       {messages.length > 0 && (
         <div className="chat-container" ref={chatContainerRef}>
           {messages.map((msg, idx) => (
@@ -82,7 +79,7 @@ function App() {
         </div>
       )}
 
-      {/* Область ввода */}
+      {/* Обновленная область ввода */}
       <div className="input-area">
         <textarea
           value={input}
@@ -92,7 +89,25 @@ function App() {
           rows={1}
           disabled={isLoading}
         />
-        {/* Кнопка с иконкой отправки (SVG) */}
+        
+        {/* Кнопка Скрепка (справа от поля ввода) */}
+        <button className="action-btn" aria-label="Прикрепить файл">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
+          </svg>
+        </button>
+
+        {/* Кнопка Микрофон (между скрепкой и отправкой) */}
+        <button className="action-btn" aria-label="Голосовой ввод">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+            <line x1="12" y1="19" x2="12" y2="23"></line>
+            <line x1="8" y1="23" x2="16" y2="23"></line>
+          </svg>
+        </button>
+
+        {/* Кнопка Отправить (синяя, круглая) */}
         <button 
           onClick={handleSend} 
           disabled={!input.trim() || isLoading} 
