@@ -14,6 +14,7 @@
 }
 
 .app-container {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100vh; 
@@ -21,15 +22,11 @@
   max-width: 768px;
   margin: 0 auto;
   background-color: var(--bg-color);
-  position: relative;
+  overflow: hidden; /* Предотвращает двойной скролл */
 }
 
 .empty-state-app {
   justify-content: center;
-}
-
-.chat-active-app {
-  justify-content: flex-end;
 }
 
 /* Кнопка Войти */
@@ -53,12 +50,18 @@
   background-color: #555555;
 }
 
+/* Диалоговое окно на всю высоту */
 .chat-container {
-  flex: 1;
-  overflow-y: auto;
-  padding: 70px 1rem 1rem 1rem; 
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  /* Увеличенный отступ снизу, чтобы последнее сообщение не пряталось за полем ввода */
+  padding: 70px 1rem 120px 1rem; 
   display: flex;
   flex-direction: column;
+  overflow-y: auto;
 }
 
 .message-wrapper {
@@ -69,14 +72,14 @@
 .message-wrapper.user { justify-content: flex-end; }
 .message-wrapper.assistant { justify-content: flex-start; }
 
-/* Сообщение пользователя (Увеличены отступы) */
+/* Увеличенные внутренние отступы у сообщений пользователя */
 .message.user {
   max-width: 85%;
-  padding: 1.1rem 1.4rem; /* БЫЛО 0.8rem 1rem - УВЕЛИЧЕНО */
+  padding: 1.2rem 1.5rem; /* Было 0.8rem 1rem */
   background-color: var(--user-bubble);
   color: var(--text-color);
-  border-radius: 18px;
-  border-bottom-right-radius: 4px;
+  border-radius: 22px; /* Немного увеличили под новые отступы */
+  border-bottom-right-radius: 6px;
   word-wrap: break-word;
   white-space: pre-wrap; 
   box-shadow: 0 1px 2px rgba(0,0,0,0.05);
@@ -96,16 +99,29 @@
 .message.typing span:nth-child(3) { animation-delay: 0.4s; }
 @keyframes bounce { 0%, 80%, 100% { transform: translateY(0); } 40% { transform: translateY(-8px); } }
 
-/* Область ввода (Убран фон) */
+/* Область ввода, расположенная поверх диалогового окна */
 .input-area {
   display: flex;
   gap: 12px;
   padding: 1rem;
-  /* background-color: var(--bg-color); - УБРАНО */
+  background-color: var(--bg-color); /* Сплошной фон, чтобы текст не просвечивал */
   width: 100%;
+  z-index: 20;
 }
 
-/* Поле ввода */
+/* В начальном состоянии поле центрируется флексами контейнера */
+.empty-state-app .input-area {
+  position: relative;
+}
+
+/* Когда чат активен, поле "прилепляется" вниз поверх чата */
+.chat-active-app .input-area {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+}
+
 .input-area textarea {
   flex: 1;
   padding: 0.85rem 1.25rem;
@@ -118,10 +134,8 @@
   font-family: inherit;
   line-height: 1.4;
   min-height: 48px; 
-  background-color: #ffffff; /* Добавлен белый фон самому полю, чтобы текст не накладывался при прокрутке */
 }
 
-/* Кнопка отправки */
 .input-area .send-btn {
   display: flex;
   justify-content: center;
