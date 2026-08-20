@@ -165,8 +165,7 @@ body::-webkit-scrollbar-thumb:hover {
   line-height: 1.4;
   min-height: 48px; 
   /* Фон самого поля ввода оставляем белым, чтобы текст был читаем */ 
-  /* background-color: var(--bg-color);  */
-  background-color: blue; 
+  background-color: var(--bg-color); 
 }
 
 /* Стили для круглых кнопок */
