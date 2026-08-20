@@ -4,6 +4,8 @@
   --user-bubble: #f1f1f1; 
   --border-color: #e5e5e5;
   --accent-color: #007aff;
+  --icon-btn-bg: #f1f1f1;
+  --icon-btn-color: #333333;
 }
 
 * { 
@@ -22,19 +24,148 @@
   max-width: 768px;
   margin: 0 auto;
   background-color: var(--bg-color);
-  overflow: hidden; /* Предотвращает двойной скролл */
+  overflow: hidden;
 }
 
 .empty-state-app {
   justify-content: center;
 }
 
-/* Кнопка Войти */
 .login-btn {
   position: fixed;
   top: 15px;
   right: 15px;
   z-index: 100;
+  background-color: #333333;
+  color: #ffffff;
+  border: none;
+  padding: 10px 20px;
+  border-radius: 20px; 
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.login-btn:hover { background-color: #555555; }
+
+.chat-container {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 70px 1rem 120px 1rem; 
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.message-wrapper {
+  display: flex;
+  margin-bottom: 1.5rem;
+  width: 100%;
+}
+.message-wrapper.user { justify-content: flex-end; }
+.message-wrapper.assistant { justify-content: flex-start; }
+
+.message.user {
+  max-width: 85%;
+  padding: 1.2rem 1.5rem; 
+  background-color: var(--user-bubble);
+  color: var(--text-color);
+  border-radius: 22px; 
+  border-bottom-right-radius: 6px;
+  word-wrap: break-word;
+  white-space: pre-wrap; 
+  box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+}
+
+.message.assistant {
+  max-width: 100%;
+  color: var(--text-color);
+  word-wrap: break-word;
+  white-space: pre-wrap; 
+  line-height: 1.6;
+}
+
+.message.typing { display: flex; gap: 4px; align-items: center; padding: 10px 0; }
+.message.typing span { width: 8px; height: 8px; background: #ccc; border-radius: 50%; animation: bounce 1s infinite ease-in-out; }
+.message.typing span:nth-child(2) { animation-delay: 0.2s; }
+.message.typing span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes bounce { 0%, 80%, 100% { transform: translateY(0); } 40% { transform: translateY(-8px); } }
+
+/* Область ввода */
+.input-area {
+  display: flex;
+  gap: 10px; /* Расстояние между элементами */
+  padding: 1rem;
+  background-color: var(--bg-color);
+  width: 100%;
+  z-index: 20;
+  align-items: flex-end; /* Выравнивание по нижнему краю */
+}
+
+.empty-state-app .input-area { position: relative; }
+.chat-active-app .input-area { position: absolute; bottom: 0; left: 0; right: 0; }
+
+.input-area textarea {
+  flex: 1;
+  padding: 0.85rem 1.25rem;
+  border: 1px solid var(--border-color);
+  border-radius: 24px; 
+  resize: none;
+  outline: none;
+  max-height: 120px;
+  font-size: 1rem;
+  font-family: inherit;
+  line-height: 1.4;
+  min-height: 48px; 
+}
+
+/* Общие стили для всех круглых кнопок в зоне ввода */
+.input-area .action-btn,
+.input-area .send-btn {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 48px;
+  height: 48px; 
+  min-width: 48px;
+  padding: 0;
+  border: none;
+  border-radius: 50%; 
+  cursor: pointer;
+  transition: background 0.2s, transform 0.1s;
+  flex-shrink: 0; /* Запрещаем кнопкам сжиматься */
+}
+
+/* Серые кнопки (скрепка, микрофон) */
+.input-area .action-btn {
+  background-color: var(--icon-btn-bg);
+  color: var(--icon-btn-color);
+}
+
+.input-area .action-btn:hover {
+  background-color: #e1e1e1;
+}
+
+/* Синяя кнопка отправки */
+.input-area .send-btn {
+  background-color: var(--accent-color);
+  color: #fff;
+}
+
+.input-area .action-btn:active,
+.input-area .send-btn:active {
+  transform: scale(0.95);
+}
+
+.input-area .send-btn:disabled { 
+  background-color: #b0d4ff; 
+  cursor: not-allowed; 
+  transform: none;
+}  z-index: 100;
   background-color: #333333;
   color: #ffffff;
   border: none;
