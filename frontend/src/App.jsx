@@ -29,8 +29,9 @@ function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: input
+          message: input // Отправляем ТОЛЬКО новое сообщение
         }),
+        credentials: "include" // ВАЖНО: заставляет браузер отправлять и принимать куки
       });
 
       if (!response.ok) throw new Error('Network response was not ok');
