@@ -33,31 +33,6 @@
   justify-content: center;
 }
 
-/* Кнопка Войти (с иконкой и текстом) */
-.login-btn {
-  position: fixed;
-  top: 15px;
-  right: 15px;
-  z-index: 100;
-  /* background-color: #333333; */
-  background-color: red;
-  color: #ffffff;
-  border: none;
-  /* Убрали фиксированные width/height, добавили padding */
-  padding: 8px 16px;
-  border-radius: 20px; /* Форма "таблетки" (pill) */
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  gap: 8px; /* Расстояние между иконкой и текстом */
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background-color 0.2s;
-}
-
-.login-btn:hover { background-color: #555555; }
-
 /* Диалоговое окно */
 .chat-container {
   padding: 70px 1rem 120px 1rem; 
@@ -208,7 +183,7 @@ body::-webkit-scrollbar-thumb:hover {
   justify-content: center;
 }
 
-/* Кнопка Войти */
+/* Кнопка Войти (с иконкой и текстом) */
 .login-btn {
   position: fixed;
   top: 15px;
@@ -292,7 +267,6 @@ body::-webkit-scrollbar-thumb:hover {
   left: 50%; /* Центрирование фиксированного блока */
   transform: translateX(-50%);
   max-width: 768px; /* Совпадает с шириной контейнера */
-  box-shadow: 0 -4px 15px rgba(0,0,0,0.03); /* Легкая тень сверху, чтобы отделить от чата */
 }
 
 .input-area textarea {
