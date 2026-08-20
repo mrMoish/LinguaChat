@@ -33,9 +33,12 @@ async def chat(request: ChatRequest):
     if not OPENROUTER_API_KEY:
         raise HTTPException(status_code=500, detail="OpenRouter API Key not configured")
 
-    # Формируем историю сообщений для OpenRouter
-    messages = [{"role": "system", "content": "You are a professional translator. Your task is to translate any provided text into Russian. Output only the translated text. Do not add any comments, introductions, or explanations."}]
-    messages.append({"role": "user", "content": request.message})
+    # Формируем сообщение для OpenRouter
+    messages = [{"role": "system",
+                 "content": "You are a professional translator. Your task is to translate any provided text into Russian. Output only the translated text. Do not add any comments, introductions, or explanations."
+                },
+                {"role": "user", "content": request.message}
+               ]
 
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
