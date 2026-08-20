@@ -33,17 +33,24 @@ db_pool = None
 async def startup():
     global db_pool
     if DATABASE_URL:
-        db_pool = await asyncpg.create_pool(DATABASE_URL)
-        async with db_pool.acquire() as conn:
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS chat_history (
-                    id SERIAL PRIMARY KEY,
-                    session_id UUID NOT NULL,
-                    role VARCHAR(50) NOT NULL,
-                    content TEXT NOT NULL,
-                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
+        try:
+            # Пробуем подключиться
+            db_pool = await asyncpg.create_pool(DATABASE_URL)
+            async with db_pool.acquire() as conn:
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS chat_history (
+                        id SERIAL PRIMARY KEY,
+                        session_id UUID NOT NULL,
+                        role VARCHAR(50) NOT NULL,
+                        content TEXT NOT NULL,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+            print("База данных успешно подключена!")
+        except Exception as e:
+            # Если ошибка, не роняем приложение, просто пишем в логи
+            print(f"ОШИБКА ПОДКЛЮЧЕНИЯ К БД: {e}")
+            db_pool = None
     else:
         print("ВНИМАНИЕ: DATABASE_URL не задан!")
 
