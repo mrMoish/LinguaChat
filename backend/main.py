@@ -11,8 +11,6 @@ load_dotenv()
 
 app = FastAPI()
 
-# ВАЖНО: Для работы с куками в CORS обязательно нужно allow_credentials=True
-# И вместо "*" нужно явно указать домен вашего фронтенда!
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://trachat.vercel.app",
@@ -28,16 +26,13 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 MODEL_NAME = "deepseek/deepseek-chat"
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# Пул соединений с БД
 db_pool = None
 
 @app.on_event("startup")
 async def startup():
     global db_pool
     if DATABASE_URL:
-        # Подключаемся к базе
         db_pool = await asyncpg.create_pool(DATABASE_URL)
-        # Создаем таблицу, если её не существует
         async with db_pool.acquire() as conn:
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS chat_history (
@@ -49,7 +44,7 @@ async def startup():
                 )
             ''')
     else:
-        print("ВНИМАНИЕ: DATABASE_URL не задан, история работать не будет!")
+        print("ВНИМАНИЕ: DATABASE_URL не задан!")
 
 @app.on_event("shutdown")
 async def shutdown():
@@ -59,39 +54,57 @@ async def shutdown():
 class ChatRequest(BaseModel):
     message: str
 
-@app.post("/api/chat")
-async def chat(request: ChatRequest, req: Request):
-    if not OPENROUTER_API_KEY:
-        raise HTTPException(status_code=500, detail="OpenRouter API Key not configured")
-
-    # 1. Работа с кукой и UUID
+# 1. НОВЫЙ ЭНДПОИНТ ДЛЯ ЗАГРУЗКИ ИСТОРИИ ПРИ ВХОДЕ
+@app.get("/api/history")
+async def get_history(req: Request):
     session_id_str = req.cookies.get("session_id")
+    
+    # Если куки нет, генерируем новый UUID и сразу возвращаем пустую историю
     if not session_id_str:
         session_id_str = str(uuid.uuid4())
-    
-    session_id = uuid.UUID(session_id_str)
+        response_obj = Response(content='{"history": []}', media_type="application/json")
+        response_obj.set_cookie(
+            key="session_id", value=session_id_str, httponly=True, 
+            max_age=30*24*60*60, samesite="none", secure=True
+        )
+        return response_obj
 
-    # 2. Достаем историю из БД
-    db_history = []
+    session_id = uuid.UUID(session_id_str)
+    
     if db_pool:
         async with db_pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT role, content FROM chat_history WHERE session_id = $1 ORDER BY created_at ASC",
                 session_id
             )
-            db_history = [{"role": row["role"], "content": row["content"]} for row in rows]
+            history = [{"role": row["role"], "content": row["content"]} for row in rows]
+            return {"history": history}
+    
+    return {"history": []}
 
-    # 3. Формируем запрос в OpenRouter
+
+# 2. ОСНОВНОЙ ЭНДПОИНТ ПЕРЕВОДА
+@app.post("/api/chat")
+async def chat(request: ChatRequest, req: Request):
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(status_code=500, detail="OpenRouter API Key not configured")
+
+    session_id_str = req.cookies.get("session_id")
+    if not session_id_str:
+        session_id_str = str(uuid.uuid4())
+    session_id = uuid.UUID(session_id_str)
+
+    # Формируем запрос ТОЛЬКО с текущим сообщением (без истории из БД)
     messages = [
         {
             "role": "system", 
-            "content": "Ты профессиональный переводчик. Твоя задача — переводить любой предоставленный текст на русский язык. Выводи только переведенный текст."
+            "content": "Ты профессиональный переводчик. Твоя задача — переводить любой предоставленный текст на русский язык. Выводи только переведенный текст. Не добавляй комментариев."
+        },
+        {
+            "role": "user", 
+            "content": request.message
         }
     ]
-    # Добавляем историю из базы
-    messages.extend(db_history)
-    # Добавляем новое сообщение пользователя
-    messages.append({"role": "user", "content": request.message})
 
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -99,11 +112,10 @@ async def chat(request: ChatRequest, req: Request):
     }
     payload = {
         "model": MODEL_NAME,
-        "messages": messages,
+        "messages": messages, # Отправляем только текущий текст!
     }
 
     try:
-        # 4. Отправляем запрос в ИИ
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 "https://openrouter.ai/api/v1/chat/completions",
@@ -116,36 +128,30 @@ async def chat(request: ChatRequest, req: Request):
             
             choices = data.get("choices", [])
             replies = []
-            for idx, choice in enumerate(choices):
+            for choice in choices:
                 content = choice.get("message", {}).get("content", "").strip()
                 if content:
                     replies.append(content)
             
-            ai_message = "\n\n".join(replies) if replies else "ИИ не сгенерировал никакого ответа."
+            ai_message = "\n\n".join(replies) if replies else "ИИ не сгенерировал ответ."
 
-        # 5. Сохраняем историю в БД
+        # СОХРАНЯЕМ ИСТОРИЮ В БД (только для архива)
         if db_pool:
             async with db_pool.acquire() as conn:
-                # Сохраняем сообщение пользователя
                 await conn.execute(
                     "INSERT INTO chat_history (session_id, role, content) VALUES ($1, $2, $3)",
                     session_id, "user", request.message
                 )
-                # Сохраняем ответ ИИ
                 await conn.execute(
                     "INSERT INTO chat_history (session_id, role, content) VALUES ($1, $2, $3)",
                     session_id, "assistant", ai_message
                 )
 
-        # 6. Возвращаем ответ и обновляем куку
-        response_obj = Response(content='{"reply": "%s"}' % ai_message.replace('"', '\\"'), media_type="application/json")
+        # Возвращаем ответ и обновляем куку
+        response_obj = Response(content='{"reply": "%s"}' % ai_message.replace('"', '\\"').replace('\n', '\\n'), media_type="application/json")
         response_obj.set_cookie(
-            key="session_id", 
-            value=session_id_str, 
-            httponly=True, 
-            max_age=30*24*60*60, # 30 дней
-            samesite="none",     # ВАЖНО для кросс-доменных запросов (Vercel -> Render)
-            secure=True          # ВАЖНО для samesite=none (требует HTTPS на Render и Vercel)
+            key="session_id", value=session_id_str, httponly=True, 
+            max_age=30*24*60*60, samesite="none", secure=True
         )
         return response_obj
 
@@ -157,3 +163,5 @@ async def chat(request: ChatRequest, req: Request):
 @app.get("/")
 def read_root():
     return {"status": "Backend is running"}
+
+
