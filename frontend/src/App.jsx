@@ -44,16 +44,23 @@ function App() {
 
     initChat();
   }, []);
-
-  // 2. СОХРАНЕНИЕ В localStorage ПРИ ИЗМЕНЕНИИ СООБЩЕНИЙ
+  
+  // 2. СОХРАНЕНИЕ В localStorage И ПРОКРУТКА
   useEffect(() => {
     if (messages.length > 0) {
       localStorage.setItem('translator_chat_history', JSON.stringify(messages));
     }
     
-    // Прокрутка вниз
-    if (chatContainerRef.current) {
-      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    // Прокрутка окна браузера вниз (так как скроллится само окно)
+    if (messages.length > 0) {
+      // Небольшая задержка (100мс), чтобы DOM успел отрисовать новое сообщение перед прокруткой
+      const timer = setTimeout(() => {
+        window.scrollTo({
+          top: document.documentElement.scrollHeight,
+          behavior: 'smooth' // Плавная прокрутка
+        });
+      }, 100);
+      return () => clearTimeout(timer);
     }
   }, [messages, isLoading]);
 
