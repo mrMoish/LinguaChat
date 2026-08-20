@@ -5,9 +5,53 @@ function App() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [isInitializing, setIsInitializing] = useState(true);
   const chatContainerRef = useRef(null);
 
+  // 1. ЗАГРУЗКА ИСТОРИИ ПРИ СТАРТЕ
   useEffect(() => {
+    const initChat = async () => {
+      // Сначала пробуем загрузить из localStorage (мгновенно)
+      const savedHistory = localStorage.getItem('translator_chat_history');
+      if (savedHistory) {
+        try {
+          setMessages(JSON.parse(savedHistory));
+        } catch (e) {
+          console.error("Ошибка чтения localStorage", e);
+        }
+      }
+
+      // Затем запрашиваем с сервера (синхронизация)
+      try {
+        const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
+        const response = await fetch(`${backendUrl}/api/history`, {
+          credentials: "include" // ВАЖНО: получаем куку
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          if (data.history && data.history.length > 0) {
+            setMessages(data.history);
+            localStorage.setItem('translator_chat_history', JSON.stringify(data.history));
+          }
+        }
+      } catch (error) {
+        console.error('Ошибка загрузки истории с сервера:', error);
+      } finally {
+        setIsInitializing(false);
+      }
+    };
+
+    initChat();
+  }, []);
+
+  // 2. СОХРАНЕНИЕ В localStorage ПРИ ИЗМЕНЕНИИ СООБЩЕНИЙ
+  useEffect(() => {
+    if (messages.length > 0) {
+      localStorage.setItem('translator_chat_history', JSON.stringify(messages));
+    }
+    
+    // Прокрутка вниз
     if (chatContainerRef.current) {
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
     }
@@ -29,16 +73,20 @@ function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: input // Отправляем ТОЛЬКО новое сообщение
+          message: input // Отправляем ТОЛЬКО текущее сообщение
         }),
-        credentials: "include" // ВАЖНО: заставляет браузер отправлять и принимать куки
+        credentials: "include" // ВАЖНО: отправляем куку
       });
 
       if (!response.ok) throw new Error('Network response was not ok');
       
       const data = await response.json();
       const aiMessage = { role: 'assistant', content: data.reply };
-      setMessages([...newMessages, aiMessage]);
+      const finalMessages = [...newMessages, aiMessage];
+      setMessages(finalMessages);
+      
+      // Сохраняем сразу в localStorage
+      localStorage.setItem('translator_chat_history', JSON.stringify(finalMessages));
     } catch (error) {
       console.error('Error:', error);
       const errorMessage = { role: 'assistant', content: 'Ошибка перевода. Попробуйте позже.' };
@@ -55,10 +103,14 @@ function App() {
     }
   };
 
+  // Показываем пустой экран, пока идет инициализация (чтобы не было скачков)
+  if (isInitializing) {
+    return <div className="app-container"></div>;
+  }
+
   return (
     <div className={`app-container ${messages.length === 0 ? 'empty-state-app' : 'chat-active-app'}`}>
       
-      {/* Кнопка Войти с иконкой и текстом */}
       <button className="login-btn" aria-label="Войти">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
@@ -87,10 +139,8 @@ function App() {
         </div>
       )}
 
-      {/* Обновленная область ввода */}
       <div className="input-area">
         
-        {/* Кнопка Скрепка (теперь слева) */}
         <button className="action-btn" aria-label="Прикрепить файл">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
@@ -101,12 +151,11 @@ function App() {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Введите текст..."
+          placeholder="Введите текст для перевода..."
           rows={1}
           disabled={isLoading}
         />
 
-        {/* Кнопка Микрофон */}
         <button className="action-btn" aria-label="Голосовой ввод">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
@@ -116,7 +165,6 @@ function App() {
           </svg>
         </button>
 
-        {/* Кнопка Отправить */}
         <button 
           onClick={handleSend} 
           disabled={!input.trim() || isLoading} 
