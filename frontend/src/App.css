@@ -15,22 +15,57 @@
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; 
 }
 
+/* Настройка полосы прокрутки для окна браузера */
+
+/* Для Firefox */
+html {
+  scrollbar-width: thin;
+  scrollbar-color: #cccccc transparent;
+}
+
+/* Для Chrome, Safari, Edge */
+body::-webkit-scrollbar {
+  width: 8px;
+}
+
+body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+body::-webkit-scrollbar-thumb {
+  background-color: #cccccc; 
+  border-radius: 4px; 
+  border: 2px solid transparent; 
+  background-clip: content-box;
+}
+
+body::-webkit-scrollbar-thumb:hover {
+  background-color: #bbbbbb; 
+  background-clip: content-box;
+}
+
+
+/* Основной контейнер приложения */
 .app-container {
   position: relative;
   display: flex;
   flex-direction: column;
-  height: 100vh; 
-  height: 100dvh; 
+  min-height: 100vh; 
+  min-height: 100dvh; /* Учитывает мобильные панели браузера */
   max-width: 768px;
   margin: 0 auto;
   background-color: var(--bg-color);
-  overflow: hidden;
+  /* overflow: hidden убрали, чтобы страница могла скроллиться браузером */
 }
 
+/* Состояние, когда истории нет (центрируем форму) */
 .empty-state-app {
+  height: 100vh;
+  height: 100dvh;
   justify-content: center;
 }
 
+/* Кнопка Войти */
 .login-btn {
   position: fixed;
   top: 15px;
@@ -49,16 +84,12 @@
 
 .login-btn:hover { background-color: #555555; }
 
+/* Диалоговое окно (теперь в обычном потоке) */
 .chat-container {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  padding: 70px 1rem 120px 1rem; 
+  padding: 70px 1rem 120px 1rem; /* 120px снизу, чтобы не пряталось за фиксированным полем ввода */
   display: flex;
   flex-direction: column;
-  overflow-y: auto;
+  width: 100%;
 }
 
 .message-wrapper {
@@ -98,16 +129,28 @@
 /* Область ввода */
 .input-area {
   display: flex;
-  gap: 10px; /* Расстояние между элементами */
+  gap: 10px;
   padding: 1rem;
   background-color: var(--bg-color);
   width: 100%;
   z-index: 20;
-  align-items: flex-end; /* Выравнивание по нижнему краю */
+  align-items: flex-end;
 }
 
-.empty-state-app .input-area { position: relative; }
-.chat-active-app .input-area { position: absolute; bottom: 0; left: 0; right: 0; }
+/* В начальном состоянии поле в обычном потоке, чтобы центрироваться */
+.empty-state-app .input-area {
+  position: relative;
+}
+
+/* Когда чат активен, поле "прилепляется" вниз поверх прокручиваемой страницы */
+.chat-active-app .input-area {
+  position: fixed;
+  bottom: 0;
+  left: 50%; /* Центрирование фиксированного блока */
+  transform: translateX(-50%);
+  max-width: 768px; /* Совпадает с шириной контейнера */
+  box-shadow: 0 -4px 15px rgba(0,0,0,0.03); /* Легкая тень сверху, чтобы отделить от чата */
+}
 
 .input-area textarea {
   flex: 1;
@@ -137,20 +180,16 @@
   border-radius: 50%; 
   cursor: pointer;
   transition: background 0.2s, transform 0.1s;
-  flex-shrink: 0; /* Запрещаем кнопкам сжиматься */
+  flex-shrink: 0; 
 }
 
-/* Серые кнопки (скрепка, микрофон) */
 .input-area .action-btn {
   background-color: var(--icon-btn-bg);
   color: var(--icon-btn-color);
 }
 
-.input-area .action-btn:hover {
-  background-color: #e1e1e1;
-}
+.input-area .action-btn:hover { background-color: #e1e1e1; }
 
-/* Синяя кнопка отправки */
 .input-area .send-btn {
   background-color: var(--accent-color);
   color: #fff;
@@ -165,160 +204,4 @@
   background-color: #b0d4ff; 
   cursor: not-allowed; 
   transform: none;
-}  z-index: 100;
-  background-color: #333333;
-  color: #ffffff;
-  border: none;
-  padding: 10px 20px;
-  border-radius: 20px; 
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background-color 0.2s;
 }
-
-.login-btn:hover {
-  background-color: #555555;
-}
-
-/* Диалоговое окно на всю высоту */
-.chat-container {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  /* Увеличенный отступ снизу, чтобы последнее сообщение не пряталось за полем ввода */
-  padding: 70px 1rem 120px 1rem; 
-  display: flex;
-  flex-direction: column;
-  overflow-y: auto;
-}
-
-.message-wrapper {
-  display: flex;
-  margin-bottom: 1.5rem;
-  width: 100%;
-}
-.message-wrapper.user { justify-content: flex-end; }
-.message-wrapper.assistant { justify-content: flex-start; }
-
-/* Увеличенные внутренние отступы у сообщений пользователя */
-.message.user {
-  max-width: 85%;
-  padding: 1.2rem 1.5rem; /* Было 0.8rem 1rem */
-  background-color: var(--user-bubble);
-  color: var(--text-color);
-  border-radius: 22px; /* Немного увеличили под новые отступы */
-  border-bottom-right-radius: 6px;
-  word-wrap: break-word;
-  white-space: pre-wrap; 
-  box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-}
-
-.message.assistant {
-  max-width: 100%;
-  color: var(--text-color);
-  word-wrap: break-word;
-  white-space: pre-wrap; 
-  line-height: 1.6;
-}
-
-.message.typing { display: flex; gap: 4px; align-items: center; padding: 10px 0; }
-.message.typing span { width: 8px; height: 8px; background: #ccc; border-radius: 50%; animation: bounce 1s infinite ease-in-out; }
-.message.typing span:nth-child(2) { animation-delay: 0.2s; }
-.message.typing span:nth-child(3) { animation-delay: 0.4s; }
-@keyframes bounce { 0%, 80%, 100% { transform: translateY(0); } 40% { transform: translateY(-8px); } }
-
-/* Область ввода, расположенная поверх диалогового окна */
-.input-area {
-  display: flex;
-  gap: 12px;
-  padding: 1rem;
-  width: 100%;
-  z-index: 20;
-}
-
-/* В начальном состоянии поле центрируется флексами контейнера */
-.empty-state-app .input-area {
-  position: relative;
-}
-
-/* Когда чат активен, поле "прилепляется" вниз поверх чата */
-.chat-active-app .input-area {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-}
-
-.input-area textarea {
-  flex: 1;
-  padding: 0.85rem 1.25rem;
-  border: 1px solid var(--border-color);
-  border-radius: 24px; 
-  resize: none;
-  outline: none;
-  max-height: 120px;
-  font-size: 1rem;
-  font-family: inherit;
-  line-height: 1.4;
-  min-height: 48px; 
-}
-
-.input-area .send-btn {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  width: 48px;
-  height: 48px; 
-  min-width: 48px;
-  padding: 0;
-  background-color: var(--accent-color);
-  color: #fff;
-  border: none;
-  border-radius: 50%; 
-  cursor: pointer;
-  transition: background 0.2s, transform 0.1s;
-  align-self: flex-end; 
-  margin-bottom: 1px; 
-}
-
-.input-area .send-btn:active {
-  transform: scale(0.95);
-}
-
-.input-area .send-btn:disabled { 
-  background-color: #b0d4ff; 
-  cursor: not-allowed; 
-}
-
-/* Настройка полосы прокрутки для чата */
-
-/* Для Firefox */
-.chat-container {
-  scrollbar-width: thin;
-  scrollbar-color: #e6e6e6 transparent; /* Цвет ползуна | Цвет дорожки */
-}
-
-/* Для Chrome, Safari, Edge */
-.chat-container::-webkit-scrollbar {
-  width: 8px; /* Ширина полосы */
-}
-
-.chat-container::-webkit-scrollbar-track {
-  background: transparent; /* Прозрачный фон дорожки */
-}
-
-.chat-container::-webkit-scrollbar-thumb {
-  background-color: #e6e6e6; /* Светло-серый цвет ползуна */
-  border-radius: 4px; /* Скругление углов */
-  border: 2px solid transparent; /* Небольшой отступ от краев */
-  background-clip: content-box;
-}
-
-/* Эффект при наведении (чтобы было видно, что это активный элемент) */
-/* .chat-container::-webkit-scrollbar-thumb:hover {
-  background-color: #bbbbbb; 
-  background-clip: content-box;
-} */
