@@ -39,7 +39,8 @@
   top: 15px;
   right: 15px;
   z-index: 100;
-  background-color: #333333;
+  /* background-color: #333333; */
+  background-color: red;
   color: #ffffff;
   border: none;
   /* Убрали фиксированные width/height, добавили padding */
