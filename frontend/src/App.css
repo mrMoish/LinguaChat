@@ -59,7 +59,7 @@ body::-webkit-scrollbar-thumb:hover {
   justify-content: center;
 }
 
-/* Кнопка Войти (Круглая с иконкой) */
+/* Кнопка Войти (с иконкой и текстом) */
 .login-btn {
   position: fixed;
   top: 15px;
@@ -68,13 +68,15 @@ body::-webkit-scrollbar-thumb:hover {
   background-color: #333333;
   color: #ffffff;
   border: none;
-  width: 40px;
-  height: 40px;
-  padding: 0;
-  border-radius: 50%; 
+  /* Убрали фиксированные width/height, добавили padding */
+  padding: 8px 16px;
+  border-radius: 20px; /* Форма "таблетки" (pill) */
   display: flex;
   justify-content: center;
   align-items: center;
+  gap: 8px; /* Расстояние между иконкой и текстом */
+  font-size: 14px;
+  font-weight: 500;
   cursor: pointer;
   transition: background-color 0.2s;
 }
