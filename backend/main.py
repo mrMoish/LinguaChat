@@ -106,7 +106,7 @@ async def chat(request: ChatRequest, req: Request):
     messages = [
         {
             "role": "system", 
-            "content": "Ты профессиональный переводчик. Твоя задача — переводить любой предоставленный текст на русский язык. Выводи только переведенный текст. Не добавляй комментариев."
+            "content": "You are a professional translator. Your task is to translate any provided text into Russian. Output only the translated text. Do not add any comments."
         },
         {
             "role": "user", 
