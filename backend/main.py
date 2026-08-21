@@ -1,5 +1,6 @@
 import os
 import uuid
+import json
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -11,7 +12,6 @@ load_dotenv()
 
 app = FastAPI()
 
-# Убираем allow_credentials, так как куки больше не используем
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://trachat.vercel.app",
@@ -19,7 +19,7 @@ app.add_middleware(
                    "http://localhost:5173",
                    "http://127.0.0.1:5173"],
     allow_methods=["*"],
-    allow_headers=["*", "X-Session-Id"], # Разрешаем наш кастомный заголовок
+    allow_headers=["*", "X-Session-Id"],
 )
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -44,6 +44,14 @@ async def startup():
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                     )
                 ''')
+                # Обновляем таблицу настроек (храняем только код и имя)
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS user_settings (
+                        session_id UUID PRIMARY KEY,
+                        target_language_code VARCHAR(10),
+                        target_language_name VARCHAR(100)
+                    )
+                ''')
         except Exception as e:
             print(f"DB Error: {e}")
     else:
@@ -57,7 +65,6 @@ async def shutdown():
 class ChatRequest(BaseModel):
     message: str
 
-# Вспомогательная функция для получения UUID из заголовка
 def get_session_id(req: Request):
     session_id_str = req.headers.get("X-Session-Id")
     if not session_id_str:
@@ -88,13 +95,69 @@ async def chat(request: ChatRequest, req: Request):
     session_id_str = get_session_id(req)
     session_id = uuid.UUID(session_id_str)
 
-    messages = [
-        {"role": "system", "content": "You are a professional translator. Your task is to translate any provided text into Russian. Output only the translated text. Do not add any comments."},
-        {"role": "user", "content": request.message}
-    ]
+    # Получаем настройки пользователя из БД
+    target_lang_code = None
+    target_lang_name = None
+    if db_pool:
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT target_language_code, target_language_name FROM user_settings WHERE session_id = $1", session_id)
+            if row:
+                target_lang_code = row["target_language_code"]
+                target_lang_name = row["target_language_name"]
+
+    # Формируем запросы в зависимости от наличия языка
+    if not target_lang_code:
+         # --- РЕЖИМ 1: Язык еще не задан (Первое сообщение) ---
+        system_prompt = """You are a language learning setup assistant. Evaluate the user's first message step by step.
+        
+        Step 1: Is the message a phrase indicating the language they want to learn? (e.g., "I learn English", "У меня B2 немецкий", "Spanish").
+        Step 2: If Step 1 is false, is the message written in Russian?
+        Step 3: If Step 2 is false, the message is written in a foreign language.
+
+        Based on the evaluation, you MUST output STRICT JSON without any markdown formatting:
+        {
+          "target_language_name": "Name in Russian or null",
+          "target_language_code": "ISO 639-1 code (e.g., 'en', 'fr') or null",
+          "source_language_name": "Name in Russian of the user's input language",
+          "reply": "Your reply in Russian"
+        }
+
+        Rules for the reply:
+        - If Step 1 is true: Set target_language_code and target_language_name. Reply in Russian confirming the target language (e.g., "Отлично! Теперь я буду переводить ваши тексты на английский.").
+        - If Step 2 is true (user writes in Russian): Set target_language_code to null. Reply in Russian asking which language they want to learn (e.g., "На какой язык вы хотите переводить текст?").
+        - If Step 3 is true (user writes in a foreign language): Set target_language_code and target_language_name to the detected language. Reply in Russian with the translation of the user's message (e.g., "Я определил ваш язык как Французский. Перевод: Здравствуйте. Теперь я буду переводить ваши русские тексты на французский.").
+        """
+        
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": request.message}
+        ]
+    else:
+        # --- РЕЖИМ 2: Строгий перевод ---
+        system_prompt = f"""You are a professional translator. The user's target language is {target_lang_name} ({target_lang_code}).
+        Strictly translate the user's text. Do not add any comments, notes, or conversational text.
+        If the user writes in {target_lang_name}, translate to Russian.
+        If the user writes in Russian, translate to {target_lang_name}.
+        If the user writes in any other language, translate to Russian.
+        You MUST output STRICT JSON without any markdown formatting:
+        {{
+          "source_language_name": "Name of the input language in Russian",
+          "translation": "The translated text"
+        }}"""
+        
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": request.message}
+        ]
 
     headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
-    payload = {"model": MODEL_NAME, "messages": messages}
+    
+    # Включаем строгий JSON-режим для OpenRouter
+    payload = {
+        "model": MODEL_NAME, 
+        "messages": messages,
+        "response_format": {"type": "json_object"}
+    }
 
     try:
         async with httpx.AsyncClient() as client:
@@ -102,16 +165,42 @@ async def chat(request: ChatRequest, req: Request):
             response.raise_for_status()
             data = response.json()
             
-            choices = data.get("choices", [])
-            replies = [choice.get("message", {}).get("content", "").strip() for choice in choices if choice.get("message", {}).get("content", "").strip()]
-            ai_message = "\n\n".join(replies) if replies else "ИИ не сгенерировал ответ."
+            raw_text = data["choices"][0]["message"]["content"].strip()
+            
+            # Парсим JSON
+            parsed = json.loads(raw_text)
+            source_lang_name = parsed.get("source_language_name", "")
+            
+            if not target_lang_code:
+                # Обработка первого сообщения
+                ai_reply = parsed.get("reply", "Ошибка обработки.")
+                detected_lang_code = parsed.get("target_language_code")
+                detected_lang_name = parsed.get("target_language_name")
+                
+                if detected_lang_code and db_pool:
+                    # Сохраняем только код и имя в БД
+                    async with db_pool.acquire() as conn:
+                        await conn.execute(
+                            "INSERT INTO user_settings (session_id, target_language_code, target_language_name) VALUES ($1, $2, $3) ON CONFLICT (session_id) DO UPDATE SET target_language_code = $2, target_language_name = $3",
+                            session_id, detected_lang_code, detected_lang_name
+                        )
+            else:
+                # Обработка обычного перевода
+                ai_reply = parsed.get("translation", "Ошибка перевода.")
 
+        # Сохраняем историю в БД
         if db_pool:
             async with db_pool.acquire() as conn:
                 await conn.execute("INSERT INTO chat_history (session_id, role, content) VALUES ($1, $2, $3)", session_id, "user", request.message)
-                await conn.execute("INSERT INTO chat_history (session_id, role, content) VALUES ($1, $2, $3)", session_id, "assistant", ai_message)
+                await conn.execute("INSERT INTO chat_history (session_id, role, content) VALUES ($1, $2, $3)", session_id, "assistant", ai_reply)
 
-        return {"session_id": session_id_str, "reply": ai_message}
+        # Возвращаем ответ и исходный язык для фронтенда
+        return {"session_id": session_id_str, "reply": ai_reply, "source_language": source_lang_name}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/")
+def read_root():
+    return {"status": "Backend is running"}
+
