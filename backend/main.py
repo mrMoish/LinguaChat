@@ -234,10 +234,10 @@ Create one short and engaging exercise based on these texts.
 
 The exercise must be one of the following:
 
-1. Ask the user a short question in Russian that they should answer in `{target_lang_name}`.
-2. Ask the user a short question in `{target_lang_name}` and ask them to answer in Russian.
-3. Ask the user to translate a short sentence from Russian into `{target_lang_name}`.
-4. Ask the user to translate a short sentence from `{target_lang_name}` into Russian.
+1. Ask the user a question in Russian that contains at least 7 words.
+2. Ask the user a question in `{target_lang_name}` that contains at least 7 words.
+3. Create a sentence in `{target_lang_name}` containing at least 7 words for the user to translate.
+4. Create a sentence in Russian containing at least 7 words for the user to translate.
 
 Choose the exercise that best fits the original text and its translation.
 
