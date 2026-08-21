@@ -244,3 +244,14 @@ body::-webkit-scrollbar-thumb:hover {
   background-color: #ef9a9a;
   cursor: not-allowed;
 }
+
+/* Стили для тега исходного языка */
+.source-language-tag {
+  font-size: 0.7rem;
+  color: #888;
+  margin-top: 6px;
+  text-align: right;
+  font-weight: normal;
+  text-transform: lowercase; /* Маленькие буквы для ненавязчивости */
+  opacity: 0.8;
+}
