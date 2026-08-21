@@ -91,13 +91,15 @@ body::-webkit-scrollbar-thumb:hover {
   width: 100%;
 }
 
+/* Обертка сообщения (теперь колонка, чтобы элементы были друг под другом) */
 .message-wrapper {
   display: flex;
+  flex-direction: column;
   margin-bottom: 1.5rem;
   width: 100%;
 }
-.message-wrapper.user { justify-content: flex-end; }
-.message-wrapper.assistant { justify-content: flex-start; }
+.message-wrapper.user { align-items: flex-end; } /* Прижимаем к правому краю */
+.message-wrapper.assistant { align-items: flex-start; } /* Прижимаем к левому краю */
 
 .message.user {
   max-width: 85%;
@@ -245,15 +247,17 @@ body::-webkit-scrollbar-thumb:hover {
   cursor: not-allowed;
 }
 
-/* Стили для тега исходного языка */
+
+/* Тег исходного языка (ВНЕ пузыря сообщения) */
 .source-language-tag {
   font-size: 0.7rem;
-  color: #888;
+  color: #999;
   margin-top: 6px;
   text-align: right;
   font-weight: normal;
-  text-transform: lowercase; /* Маленькие буквы для ненавязчивости */
+  text-transform: lowercase;
   opacity: 0.8;
+  padding: 0 4px;
 }
 
 /* Стили для пустого экрана (приветственное сообщение) */
@@ -267,7 +271,29 @@ body::-webkit-scrollbar-thumb:hover {
   max-width: 400px;
 }
 
-/* Кнопка Мини-урок */
+/* Обертка сообщения (теперь колонка, чтобы элементы были друг под другом) */
+.message-wrapper {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 1.5rem;
+  width: 100%;
+}
+.message-wrapper.user { align-items: flex-end; } /* Прижимаем к правому краю */
+.message-wrapper.assistant { align-items: flex-start; } /* Прижимаем к левому краю */
+
+/* Тег исходного языка (ВНЕ пузыря сообщения) */
+.source-language-tag {
+  font-size: 0.7rem;
+  color: #999;
+  margin-top: 6px;
+  text-align: right;
+  font-weight: normal;
+  text-transform: lowercase;
+  opacity: 0.8;
+  padding: 0 4px;
+}
+
+/* Кнопка Мини-урок (ВНЕ пузыря сообщения) */
 .lesson-btn {
   background-color: transparent;
   color: #666;
@@ -279,6 +305,7 @@ body::-webkit-scrollbar-thumb:hover {
   cursor: pointer;
   margin-top: 8px;
   transition: all 0.2s;
+  align-self: flex-start; /* Чтобы кнопка была под сообщением слева */
 }
 
 .lesson-btn:hover {
@@ -293,7 +320,7 @@ body::-webkit-scrollbar-thumb:hover {
 
 /* Сообщение с уроком */
 .message.lesson-message {
-  background-color: #f0f7ff; /* Очень светло-голубой */
+  background-color: #f0f7ff; 
   border: 1px solid #d0e3ff;
   color: #1d1d1f;
   border-radius: 18px;
