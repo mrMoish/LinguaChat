@@ -241,7 +241,7 @@ Do not provide the correct answer immediately. Do not add explanations or commen
 
     Return STRICT JSON without markdown:
     {{
-      "lesson_text": "🎓 Мини-урок `{target_lang_name}`! ['Ответь' or 'Переведи']\\n\\n[Your task]"
+      "lesson_text": "🎓 Мини-урок! ['Ответь' or 'Переведи']\\n\\n[Question or phrase]"
     }}"""
 
     headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
