@@ -207,3 +207,40 @@ body::-webkit-scrollbar-thumb:hover {
   cursor: not-allowed; 
   transform: none;
 }
+
+
+
+/* Стили для сообщения об ошибке */
+.message.error-message {
+  background-color: #fff0f0;
+  color: #d32f2f;
+  border: 1px solid #ffcdd2;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  border-radius: 18px;
+  padding: 1rem 1.25rem;
+}
+
+/* Стили для кнопки повтора */
+.retry-btn {
+  background-color: #d32f2f;
+  color: white;
+  border: none;
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.retry-btn:hover {
+  background-color: #b71c1c;
+}
+
+.retry-btn:disabled {
+  background-color: #ef9a9a;
+  cursor: not-allowed;
+}
