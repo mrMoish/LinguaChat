@@ -12,18 +12,19 @@ function App() {
   // 1. ИНИЦИАЛИЗАЦИЯ ПРИ СТАРТЕ
   useEffect(() => {
     const initChat = async () => {
-      // Пробуем взять UUID из localStorage
       let currentSessionId = localStorage.getItem('translator_session_id');
       
-      // Если UUID есть, пробуем загрузить историю текстов из localStorage (мгновенно)
       if (currentSessionId) {
         const savedHistory = localStorage.getItem('translator_chat_history');
         if (savedHistory) {
-          try { setMessages(JSON.parse(savedHistory)); } catch (e) {}
+          try { 
+            // Отфильтровываем возможные старые ошибки при загрузке
+            const parsed = JSON.parse(savedHistory);
+            setMessages(parsed.filter(m => !m.isError)); 
+          } catch (e) {}
         }
       }
 
-      // Запрашиваем актуальную историю с бэкенда
       try {
         const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
         const headers = {};
@@ -32,7 +33,6 @@ function App() {
         const response = await fetch(`${backendUrl}/api/history`, { headers });
         if (response.ok) {
           const data = await response.json();
-          // Сохраняем полученный UUID (если его не было, бэкенд сгенерировал новый)
           localStorage.setItem('translator_session_id', data.session_id);
           setSessionId(data.session_id);
           
@@ -53,7 +53,10 @@ function App() {
   // 2. СОХРАНЕНИЕ И ПРОКРУТКА
   useEffect(() => {
     if (messages.length > 0) {
-      localStorage.setItem('translator_chat_history', JSON.stringify(messages));
+      // Сохраняем в localStorage, исключая сообщения с ошибками
+      const cleanMessages = messages.filter(m => !m.isError);
+      localStorage.setItem('translator_chat_history', JSON.stringify(cleanMessages));
+      
       const timer = setTimeout(() => {
         window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
       }, 100);
@@ -61,52 +64,84 @@ function App() {
     }
   }, [messages, isLoading]);
 
-  const handleSend = async () => {
-    if (!input.trim() || isLoading) return;
-
-    const userMessage = { role: 'user', content: input };
-    const newMessages = [...messages, userMessage];
-    setMessages(newMessages);
-    setInput('');
+  // Универсальная функция отправки запроса на сервер
+  const sendRequest = async (text, messagesState) => {
     setIsLoading(true);
-
     try {
       const backendUrl = import.meta.env.VITE_BACKEND_URL || ''; 
       const headers = { 'Content-Type': 'application/json' };
       if (sessionId) headers['X-Session-Id'] = sessionId;
-      
+
       const response = await fetch(`${backendUrl}/api/chat`, {
         method: 'POST',
         headers: headers,
-        body: JSON.stringify({ message: input })
+        body: JSON.stringify({ message: text })
       });
 
       if (!response.ok) throw new Error('Network response was not ok');
       
       const data = await response.json();
-      // Сохраняем новый UID, если бэкенд его обновил
       if (data.session_id) {
         localStorage.setItem('translator_session_id', data.session_id);
         setSessionId(data.session_id);
       }
 
       const aiMessage = { role: 'assistant', content: data.reply };
-      const finalMessages = [...newMessages, aiMessage];
+      const finalMessages = [...messagesState, aiMessage];
       setMessages(finalMessages);
       localStorage.setItem('translator_chat_history', JSON.stringify(finalMessages));
     } catch (error) {
       console.error('Error:', error);
-      const errorMessage = { role: 'assistant', content: 'Ошибка перевода. Попробуйте позже.' };
-      setMessages([...newMessages, errorMessage]);
+      const errorMessage = {
+        role: 'assistant',
+        content: 'Ошибка перевода. Попробуйте позже.',
+        isError: true,
+        originalText: text // Сохраняем текст, который не удалось перевести
+      };
+      const finalMessages = [...messagesState, errorMessage];
+      setMessages(finalMessages);
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleKeyDown = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
+  // Отправка нового сообщения
+  const handleSend = async () => {
+    if (!input.trim() || isLoading) return;
+
+    // Если были старые ошибки - удаляем их из интерфейса
+    const cleanMessages = messages.filter(m => !m.isError);
+
+    const userMessage = { role: 'user', content: input };
+    const newMessages = [...cleanMessages, userMessage];
+    setMessages(newMessages);
+
+    const currentInput = input;
+    setInput('');
+
+    await sendRequest(currentInput, newMessages);
   };
 
+  // Повторная отправка при нажатии на кнопку "Попробовать снова"
+  const handleRetry = async (errorIndex) => {
+    if (isLoading) return;
+    
+    const errorMsgObj = messages[errorIndex];
+    if (!errorMsgObj.isError) return;
+
+    // Удаляем сообщение об ошибке
+    const messagesWithoutError = messages.slice(0, errorIndex);
+    setMessages(messagesWithoutError);
+
+    await sendRequest(errorMsgObj.originalText, messagesWithoutError);
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { 
+      e.preventDefault(); 
+      handleSend(); 
+    }
+  };
 
   return (
     <div className={`app-container ${messages.length === 0 ? 'empty-state-app' : 'chat-active-app'}`}>
@@ -123,8 +158,17 @@ function App() {
         <div className="chat-container" ref={chatContainerRef}>
           {messages.map((msg, idx) => (
             <div key={idx} className={`message-wrapper ${msg.role}`}>
-              <div className={`message ${msg.role}`}>
+              <div className={`message ${msg.role} ${msg.isError ? 'error-message' : ''}`}>
                 {msg.content}
+                {msg.isError && (
+                  <button 
+                    className="retry-btn" 
+                    onClick={() => handleRetry(idx)}
+                    disabled={isLoading}
+                  >
+                    Попробовать снова
+                  </button>
+                )}
               </div>
             </div>
           ))}
@@ -180,4 +224,5 @@ function App() {
     </div>
   );
 }
+
 export default App;
