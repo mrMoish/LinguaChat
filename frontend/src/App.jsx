@@ -107,7 +107,6 @@ function App() {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
   };
 
-  if (isInitializing) return <div className="app-container"></div>;
 
   return (
     <div className={`app-container ${messages.length === 0 ? 'empty-state-app' : 'chat-active-app'}`}>
