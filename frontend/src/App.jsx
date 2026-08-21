@@ -9,7 +9,6 @@ function App() {
   const [sessionId, setSessionId] = useState(null);
   const chatContainerRef = useRef(null);
 
-  // 1. ИНИЦИАЛИЗАЦИЯ ПРИ СТАРТЕ
   useEffect(() => {
     const initChat = async () => {
       let currentSessionId = localStorage.getItem('translator_session_id');
@@ -18,7 +17,6 @@ function App() {
         const savedHistory = localStorage.getItem('translator_chat_history');
         if (savedHistory) {
           try { 
-            // Отфильтровываем возможные старые ошибки при загрузке
             const parsed = JSON.parse(savedHistory);
             setMessages(parsed.filter(m => !m.isError)); 
           } catch (e) {}
@@ -50,10 +48,8 @@ function App() {
     initChat();
   }, []);
 
-  // 2. СОХРАНЕНИЕ И ПРОКРУТКА
   useEffect(() => {
     if (messages.length > 0) {
-      // Сохраняем в localStorage, исключая сообщения с ошибками
       const cleanMessages = messages.filter(m => !m.isError);
       localStorage.setItem('translator_chat_history', JSON.stringify(cleanMessages));
       
@@ -64,7 +60,6 @@ function App() {
     }
   }, [messages, isLoading]);
 
-  // Универсальная функция отправки запроса на сервер
   const sendRequest = async (text, messagesState) => {
     setIsLoading(true);
     try {
@@ -86,8 +81,19 @@ function App() {
         setSessionId(data.session_id);
       }
 
+      const finalMessages = [...messagesState];
+      // Обновляем последнее сообщение пользователя, добавляя исходный язык
+      const lastIdx = finalMessages.length - 1;
+      if (lastIdx >= 0 && finalMessages[lastIdx].role === 'user') {
+        finalMessages[lastIdx] = {
+          ...finalMessages[lastIdx],
+          source_language: data.source_language || null
+        };
+      }
+
       const aiMessage = { role: 'assistant', content: data.reply };
-      const finalMessages = [...messagesState, aiMessage];
+      finalMessages.push(aiMessage);
+      
       setMessages(finalMessages);
       localStorage.setItem('translator_chat_history', JSON.stringify(finalMessages));
     } catch (error) {
@@ -96,7 +102,7 @@ function App() {
         role: 'assistant',
         content: 'Ошибка перевода. Попробуйте позже.',
         isError: true,
-        originalText: text // Сохраняем текст, который не удалось перевести
+        originalText: text
       };
       const finalMessages = [...messagesState, errorMessage];
       setMessages(finalMessages);
@@ -105,14 +111,11 @@ function App() {
     }
   };
 
-  // Отправка нового сообщения
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
 
-    // Если были старые ошибки - удаляем их из интерфейса
     const cleanMessages = messages.filter(m => !m.isError);
-
-    const userMessage = { role: 'user', content: input };
+    const userMessage = { role: 'user', content: input, source_language: null };
     const newMessages = [...cleanMessages, userMessage];
     setMessages(newMessages);
 
@@ -122,14 +125,12 @@ function App() {
     await sendRequest(currentInput, newMessages);
   };
 
-  // Повторная отправка при нажатии на кнопку "Попробовать снова"
   const handleRetry = async (errorIndex) => {
     if (isLoading) return;
     
     const errorMsgObj = messages[errorIndex];
     if (!errorMsgObj.isError) return;
 
-    // Удаляем сообщение об ошибке
     const messagesWithoutError = messages.slice(0, errorIndex);
     setMessages(messagesWithoutError);
 
@@ -154,12 +155,20 @@ function App() {
         <span>Войти</span>
       </button>
 
-      {messages.length > 0 && (
+      {messages.length > 0 ? (
         <div className="chat-container" ref={chatContainerRef}>
           {messages.map((msg, idx) => (
             <div key={idx} className={`message-wrapper ${msg.role}`}>
               <div className={`message ${msg.role} ${msg.isError ? 'error-message' : ''}`}>
                 {msg.content}
+                
+                {/* Отображение исходного языка под сообщением пользователя */}
+                {msg.role === 'user' && msg.source_language && (
+                  <div className="source-language-tag">
+                    {msg.source_language}
+                  </div>
+                )}
+
                 {msg.isError && (
                   <button 
                     className="retry-btn" 
@@ -181,10 +190,15 @@ function App() {
             </div>
           )}
         </div>
+      ) : (
+        !isLoading && (
+          <div className="empty-state">
+            <p>Введите текст на иностранном языке, фразу "Я учу английский" или текст на русском.</p>
+          </div>
+        )
       )}
 
       <div className="input-area">
-        
         <button className="action-btn" aria-label="Прикрепить файл">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
