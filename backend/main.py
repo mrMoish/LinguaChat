@@ -200,6 +200,68 @@ async def chat(request: ChatRequest, req: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+class LessonRequest(BaseModel):
+    user_text: str
+    ai_text: str
+
+@app.post("/api/lesson")
+async def mini_lesson(request: LessonRequest, req: Request):
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(status_code=500, detail="OpenRouter API Key not configured")
+
+    session_id_str = get_session_id(req)
+    session_id = uuid.UUID(session_id_str)
+
+    # Получаем язык пользователя
+    target_lang_name = "иностранный"
+    if db_pool:
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT target_language_name FROM user_settings WHERE session_id = $1", session_id)
+            if row:
+                target_lang_name = row["target_language_name"]
+
+    system_prompt = f"""You are a friendly and encouraging language tutor. The user's target language is {target_lang_name}.
+    The user originally wrote: "{request.user_text}"
+    The translation was: "{request.ai_text}"
+    
+    Create a short, engaging mini-lesson based on these texts.
+    1. Point out one interesting vocabulary word or a simple grammar rule from the texts.
+    2. Give the user a quick task: either ask them to translate a slightly modified sentence, or ask a simple question that requires a short answer.
+    
+    Return STRICT JSON without markdown:
+    {{
+      "lesson_text": "🎓 Мини-урок!\\n\\n[Your explanation]\\n\\nЗадание: [Your task]"
+    }}"""
+
+    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
+    payload = {
+        "model": MODEL_NAME, 
+        "messages": [{"role": "system", "content": system_prompt}],
+        "response_format": {"type": "json_object"}
+    }
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=60.0)
+            response.raise_for_status()
+            data = response.json()
+            
+            raw_text = data["choices"][0]["message"]["content"].strip()
+            parsed = json.loads(raw_text)
+            lesson_text = parsed.get("lesson_text", "Не удалось создать урок.")
+            
+            # Сохраняем урок в историю чата
+            if db_pool:
+                async with db_pool.acquire() as conn:
+                    await conn.execute("INSERT INTO chat_history (session_id, role, content) VALUES ($1, $2, $3)", session_id, "assistant", lesson_text)
+
+            return {"lesson": lesson_text}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
 @app.get("/")
 def read_root():
     return {"status": "Backend is running"}
