@@ -137,21 +137,16 @@ function App() {
     await sendRequest(errorMsgObj.originalText, messagesWithoutError);
   };
 
-    // Генерация мини-урока
+  // Генерация мини-урока
   const generateLesson = async (idx) => {
     if (isLoading) return;
     
-    // Находим исходное сообщение пользователя (оно всегда перед ответом ИИ)
     const userMsg = messages[idx - 1];
     const aiMsg = messages[idx];
     
     if (!userMsg || userMsg.role !== 'user' || !aiMsg || aiMsg.role !== 'assistant') return;
 
-    // Добавляем заглушку загрузки урока
-    const loadingMsg = { role: 'assistant', content: '', isLessonLoading: true };
-    const newMessages = [...messages, loadingMsg];
-    setMessages(newMessages);
-    setIsLoading(true);
+    setIsLoading(true); // Включаем загрузку (появятся три точки внизу)
 
     try {
       const backendUrl = import.meta.env.VITE_BACKEND_URL || ''; 
@@ -171,15 +166,15 @@ function App() {
       
       const data = await response.json();
       
-      // Заменяем заглушку на реальный урок
-      const finalMessages = newMessages.slice(0, -1);
+      // Просто добавляем урок в конец массива сообщений
+      const finalMessages = [...messages];
       finalMessages.push({ role: 'assistant', content: data.lesson, isLesson: true });
       
       setMessages(finalMessages);
       localStorage.setItem('translator_chat_history', JSON.stringify(finalMessages.filter(m => !m.isError)));
     } catch (error) {
       console.error('Error:', error);
-      const finalMessages = newMessages.slice(0, -1);
+      const finalMessages = [...messages];
       finalMessages.push({ role: 'assistant', content: 'Не удалось загрузить урок.', isError: true });
       setMessages(finalMessages);
     } finally {
@@ -207,53 +202,51 @@ function App() {
 
       {messages.length > 0 ? (
         <div className="chat-container" ref={chatContainerRef}>
-                    {messages.map((msg, idx) => (
-            <div key={idx} className={`message-wrapper ${msg.role}`}>
-              <div className={`message ${msg.role} ${msg.isError ? 'error-message' : ''} ${msg.isLesson ? 'lesson-message' : ''} ${msg.isLessonLoading ? 'lesson-loading' : ''}`}>
+            {messages.map((msg, idx) => {
+            // Проверяем, последнее ли это сообщение в массиве
+            const isLastMessage = idx === messages.length - 1;
+            
+            return (
+              <div key={idx} className={`message-wrapper ${msg.role}`}>
                 
-                {msg.isLessonLoading ? (
-                  <div className="message assistant typing">
-                    <span></span><span></span><span></span>
+                {/* Само сообщение (пузырь) */}
+                <div className={`message ${msg.role} ${msg.isError ? 'error-message' : ''} ${msg.isLesson ? 'lesson-message' : ''}`}>
+                  <div style={{ whiteSpace: 'pre-wrap' }}>
+                    {msg.content}
                   </div>
-                ) : (
-                  <>
-                    {/* Если это урок, сохраняем переносы строк */}
-                    <div style={{ whiteSpace: 'pre-wrap' }}>
-                      {msg.content}
-                    </div>
-                    
-                    {/* Отображение исходного языка под сообщением пользователя */}
-                    {msg.role === 'user' && msg.source_language && (
-                      <div className="source-language-tag">
-                        {msg.source_language}
-                      </div>
-                    )}
+                  
+                  {msg.isError && (
+                    <button 
+                      className="retry-btn" 
+                      onClick={() => handleRetry(idx)}
+                      disabled={isLoading}
+                    >
+                      Попробовать снова
+                    </button>
+                  )}
+                </div>
 
-                    {/* Кнопка мини-урока под ответами ИИ */}
-                    {msg.role === 'assistant' && !msg.isError && !msg.isLesson && (
-                      <button 
-                        className="lesson-btn" 
-                        onClick={() => generateLesson(idx)}
-                        disabled={isLoading}
-                      >
-                        🎓 Мини-урок
-                      </button>
-                    )}
-
-                    {msg.isError && (
-                      <button 
-                        className="retry-btn" 
-                        onClick={() => handleRetry(idx)}
-                        disabled={isLoading}
-                      >
-                        Попробовать снова
-                      </button>
-                    )}
-                  </>
+                {/* Исходный язык ВНЕ сообщения, но ВНУТРИ обертки (под сообщением пользователя) */}
+                {msg.role === 'user' && msg.source_language && (
+                  <div className="source-language-tag">
+                    {msg.source_language}
+                  </div>
                 )}
+
+                {/* Кнопка Мини-урок ВНЕ сообщения, только для последнего ответа ИИ */}
+                {msg.role === 'assistant' && !msg.isError && !msg.isLesson && isLastMessage && !isLoading && (
+                  <button 
+                    className="lesson-btn" 
+                    onClick={() => generateLesson(idx)}
+                    disabled={isLoading}
+                  >
+                    🎓 Мини-урок
+                  </button>
+                )}
+
               </div>
-            </div>
-          ))}
+            );
+          })}
           
           {isLoading && (
             <div className="message-wrapper assistant">
