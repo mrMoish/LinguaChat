@@ -89,7 +89,7 @@ async def chat(request: ChatRequest, req: Request):
     session_id = uuid.UUID(session_id_str)
 
     messages = [
-        {"role": "system", "content": "You are a professional translator. Your task is to translate any provided text into Russian. Output only the translated text. Do not add any comments."},
+        {"role": "system", "content": "You are a professional translator. Your task is to translate any provided text into Spain. Output only the translated text. Do not add any comments."},
         {"role": "user", "content": request.message}
     ]
 
