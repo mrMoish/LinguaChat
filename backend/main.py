@@ -44,7 +44,6 @@ async def startup():
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                     )
                 ''')
-                # Обновляем таблицу настроек (храняем только код и имя)
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS user_settings (
                         session_id UUID PRIMARY KEY,
@@ -52,6 +51,9 @@ async def startup():
                         target_language_name VARCHAR(100)
                     )
                 ''')
+                # НОВЫЕ КОЛОНКИ (добавляются, если их еще нет)
+                await conn.execute("ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS is_lesson BOOLEAN DEFAULT FALSE")
+                await conn.execute("ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS source_language VARCHAR(50)")
         except Exception as e:
             print(f"DB Error: {e}")
     else:
@@ -64,6 +66,10 @@ async def shutdown():
 
 class ChatRequest(BaseModel):
     message: str
+
+class LessonRequest(BaseModel):
+    user_text: str
+    ai_text: str
 
 def get_session_id(req: Request):
     session_id_str = req.headers.get("X-Session-Id")
@@ -78,11 +84,18 @@ async def get_history(req: Request):
     
     if db_pool:
         async with db_pool.acquire() as conn:
+            # ДОБАВЛЯЕМ is_lesson и source_language в выборку
             rows = await conn.fetch(
-                "SELECT role, content FROM chat_history WHERE session_id = $1 ORDER BY created_at ASC",
+                "SELECT role, content, is_lesson, source_language FROM chat_history WHERE session_id = $1 ORDER BY created_at ASC",
                 session_id
             )
-            history = [{"role": row["role"], "content": row["content"]} for row in rows]
+            # Преобразуем snake_case из БД в camelCase для фронтенда
+            history = [{
+                "role": row["role"], 
+                "content": row["content"], 
+                "isLesson": row["is_lesson"], 
+                "source_language": row["source_language"]
+            } for row in rows]
             return {"session_id": session_id_str, "history": history}
     
     return {"session_id": session_id_str, "history": []}
@@ -95,7 +108,6 @@ async def chat(request: ChatRequest, req: Request):
     session_id_str = get_session_id(req)
     session_id = uuid.UUID(session_id_str)
 
-    # Получаем настройки пользователя из БД
     target_lang_code = None
     target_lang_name = None
     if db_pool:
@@ -105,9 +117,7 @@ async def chat(request: ChatRequest, req: Request):
                 target_lang_code = row["target_language_code"]
                 target_lang_name = row["target_language_name"]
 
-    # Формируем запросы в зависимости от наличия языка
     if not target_lang_code:
-         # --- РЕЖИМ 1: Язык еще не задан (Первое сообщение) ---
         system_prompt = """You are a language learning setup assistant. Evaluate the user's first message step by step.
         
         Step 1: Is the message a phrase indicating the language they want to learn? (e.g., "I learn English", "У меня B2 немецкий", "Spanish").
@@ -133,6 +143,7 @@ async def chat(request: ChatRequest, req: Request):
             {"role": "user", "content": request.message}
         ]
     else:
+        system_prompt = f
         # --- РЕЖИМ 2: Строгий перевод ---
         system_prompt = f"""You are a professional translator. The user's target language is {target_lang_name} ({target_lang_code}).
         Strictly translate the user's text. Do not add any comments, notes, or conversational text.
@@ -144,15 +155,12 @@ async def chat(request: ChatRequest, req: Request):
           "source_language_name": "Name of the input language in Russian",
           "translation": "The translated text"
         }}"""
-        
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": request.message}
         ]
 
     headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
-    
-    # Включаем строгий JSON-режим для OpenRouter
     payload = {
         "model": MODEL_NAME, 
         "messages": messages,
@@ -166,44 +174,42 @@ async def chat(request: ChatRequest, req: Request):
             data = response.json()
             
             raw_text = data["choices"][0]["message"]["content"].strip()
-            
-            # Парсим JSON
             parsed = json.loads(raw_text)
+            
+            # Извлекаем исходный язык из ответа ИИ
             source_lang_name = parsed.get("source_language_name", "")
             
             if not target_lang_code:
-                # Обработка первого сообщения
                 ai_reply = parsed.get("reply", "Ошибка обработки.")
                 detected_lang_code = parsed.get("target_language_code")
                 detected_lang_name = parsed.get("target_language_name")
                 
                 if detected_lang_code and db_pool:
-                    # Сохраняем только код и имя в БД
                     async with db_pool.acquire() as conn:
                         await conn.execute(
                             "INSERT INTO user_settings (session_id, target_language_code, target_language_name) VALUES ($1, $2, $3) ON CONFLICT (session_id) DO UPDATE SET target_language_code = $2, target_language_name = $3",
                             session_id, detected_lang_code, detected_lang_name
                         )
             else:
-                # Обработка обычного перевода
                 ai_reply = parsed.get("translation", "Ошибка перевода.")
 
-        # Сохраняем историю в БД
         if db_pool:
             async with db_pool.acquire() as conn:
-                await conn.execute("INSERT INTO chat_history (session_id, role, content) VALUES ($1, $2, $3)", session_id, "user", request.message)
-                await conn.execute("INSERT INTO chat_history (session_id, role, content) VALUES ($1, $2, $3)", session_id, "assistant", ai_reply)
+                # СОХРАНЯЕМ source_language для сообщения пользователя
+                await conn.execute(
+                    "INSERT INTO chat_history (session_id, role, content, source_language) VALUES ($1, $2, $3, $4)",
+                    session_id, "user", request.message, source_lang_name
+                )
+                await conn.execute(
+                    "INSERT INTO chat_history (session_id, role, content) VALUES ($1, $2, $3)",
+                    session_id, "assistant", ai_reply
+                )
 
-        # Возвращаем ответ и исходный язык для фронтенда
         return {"session_id": session_id_str, "reply": ai_reply, "source_language": source_lang_name}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
-class LessonRequest(BaseModel):
-    user_text: str
-    ai_text: str
 
 @app.post("/api/lesson")
 async def mini_lesson(request: LessonRequest, req: Request):
@@ -213,7 +219,6 @@ async def mini_lesson(request: LessonRequest, req: Request):
     session_id_str = get_session_id(req)
     session_id = uuid.UUID(session_id_str)
 
-    # Получаем язык пользователя
     target_lang_name = "иностранный"
     if db_pool:
         async with db_pool.acquire() as conn:
@@ -261,16 +266,17 @@ Do not provide the correct answer immediately. Do not add explanations or commen
             parsed = json.loads(raw_text)
             lesson_text = parsed.get("lesson_text", "Не удалось создать урок.")
             
-            # Сохраняем урок в историю чата
             if db_pool:
                 async with db_pool.acquire() as conn:
-                    await conn.execute("INSERT INTO chat_history (session_id, role, content) VALUES ($1, $2, $3)", session_id, "assistant", lesson_text)
+                    # СОХРАНЯЕМ ФЛАГ is_lesson = TRUE
+                    await conn.execute(
+                        "INSERT INTO chat_history (session_id, role, content, is_lesson) VALUES ($1, $2, $3, TRUE)",
+                        session_id, "assistant", lesson_text
+                    )
 
             return {"lesson": lesson_text}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
 
 @app.get("/")
 def read_root():
