@@ -143,7 +143,6 @@ async def chat(request: ChatRequest, req: Request):
             {"role": "user", "content": request.message}
         ]
     else:
-        system_prompt = f
         # --- РЕЖИМ 2: Строгий перевод ---
         system_prompt = f"""You are a professional translator. The user's target language is {target_lang_name} ({target_lang_code}).
         Strictly translate the user's text. Do not add any comments, notes, or conversational text.
