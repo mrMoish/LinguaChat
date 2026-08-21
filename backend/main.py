@@ -221,17 +221,27 @@ async def mini_lesson(request: LessonRequest, req: Request):
             if row:
                 target_lang_name = row["target_language_name"]
 
-    system_prompt = f"""You are a friendly and encouraging language tutor. The user's target language is {target_lang_name}.
-    The user originally wrote: "{request.user_text}"
-    The translation was: "{request.ai_text}"
-    
-    Create a short, engaging mini-lesson based on these texts.
-    1. Point out one interesting vocabulary word or a simple grammar rule from the texts.
-    2. Give the user a quick task: either ask them to translate a slightly modified sentence, or ask a simple question that requires a short answer.
-    
+    system_prompt = f"""You are a friendly and encouraging language tutor. The user's target language is `{target_lang_name}`.
+
+The user originally wrote: `{request.user_text}`
+Translation: `{request.ai_text}`
+
+Create one short and engaging exercise based on these texts.
+
+The exercise must be one of the following:
+
+1. Ask the user a short question in Russian that they should answer in `{target_lang_name}`.
+2. Ask the user a short question in `{target_lang_name}` and ask them to answer in Russian.
+3. Ask the user to translate a short sentence from Russian into `{target_lang_name}`.
+4. Ask the user to translate a short sentence from `{target_lang_name}` into Russian.
+
+Choose the exercise that best fits the original text and its translation.
+
+Do not provide the correct answer immediately. Do not add explanations or comments.
+
     Return STRICT JSON without markdown:
     {{
-      "lesson_text": "🎓 Мини-урок!\\n\\n[Your explanation]\\n\\nЗадание: [Your task]"
+      "lesson_text": "🎓 Мини-урок {target_lang_name}! {'Ответь' or 'Переведи}\\n\\n[Your task]"
     }}"""
 
     headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
