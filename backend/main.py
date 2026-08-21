@@ -57,7 +57,7 @@ async def shutdown():
 class ChatRequest(BaseModel):
     message: str
 
-# Вспомогательная функция для получения UUID из заголовка 
+# Вспомогательная функция для получения UUID из заголовка
 def get_session_id(req: Request):
     session_id_str = req.headers.get("X-Session-Id")
     if not session_id_str:
