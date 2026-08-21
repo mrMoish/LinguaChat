@@ -7,20 +7,19 @@ import httpx
 import asyncpg
 from dotenv import load_dotenv
 
-
 load_dotenv()
 
 app = FastAPI()
 
+# Убираем allow_credentials, так как куки больше не используем
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://trachat.vercel.app",
-                   "https://linguachat-x26d.onrender.com",
-                   "http://localhost:5173",
-                   "http://127.0.0.1:5173"],
-    allow_credentials=True,
+    allow_origins=[
+        "http://localhost:5173",
+        "https://ваш-фронтенд.vercel.app" 
+    ],
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*", "X-Session-Id"], # Разрешаем наш кастомный заголовок
 )
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -34,7 +33,6 @@ async def startup():
     global db_pool
     if DATABASE_URL:
         try:
-            # Пробуем подключиться
             db_pool = await asyncpg.create_pool(DATABASE_URL)
             async with db_pool.acquire() as conn:
                 await conn.execute('''
@@ -46,11 +44,8 @@ async def startup():
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                     )
                 ''')
-            print("База данных успешно подключена!")
         except Exception as e:
-            # Если ошибка, не роняем приложение, просто пишем в логи
-            print(f"ОШИБКА ПОДКЛЮЧЕНИЯ К БД: {e}")
-            db_pool = None
+            print(f"DB Error: {e}")
     else:
         print("ВНИМАНИЕ: DATABASE_URL не задан!")
 
@@ -62,21 +57,16 @@ async def shutdown():
 class ChatRequest(BaseModel):
     message: str
 
-# 1. НОВЫЙ ЭНДПОИНТ ДЛЯ ЗАГРУЗКИ ИСТОРИИ ПРИ ВХОДЕ
-@app.get("/api/history")
-async def get_history(req: Request):
-    session_id_str = req.cookies.get("session_id")
-    
-    # Если куки нет, генерируем новый UUID и сразу возвращаем пустую историю
+# Вспомогательная функция для получения UUID из заголовка
+def get_session_id(req: Request):
+    session_id_str = req.headers.get("X-Session-Id")
     if not session_id_str:
         session_id_str = str(uuid.uuid4())
-        response_obj = Response(content='{"history": []}', media_type="application/json")
-        response_obj.set_cookie(
-            key="session_id", value=session_id_str, httponly=True, 
-            max_age=30*24*60*60, samesite="none", secure=True
-        )
-        return response_obj
+    return session_id_str
 
+@app.get("/api/history")
+async def get_history(req: Request):
+    session_id_str = get_session_id(req)
     session_id = uuid.UUID(session_id_str)
     
     if db_pool:
@@ -86,90 +76,42 @@ async def get_history(req: Request):
                 session_id
             )
             history = [{"role": row["role"], "content": row["content"]} for row in rows]
-            return {"history": history}
+            return {"session_id": session_id_str, "history": history}
     
-    return {"history": []}
+    return {"session_id": session_id_str, "history": []}
 
-
-# 2. ОСНОВНОЙ ЭНДПОИНТ ПЕРЕВОДА
 @app.post("/api/chat")
 async def chat(request: ChatRequest, req: Request):
     if not OPENROUTER_API_KEY:
         raise HTTPException(status_code=500, detail="OpenRouter API Key not configured")
 
-    session_id_str = req.cookies.get("session_id")
-    if not session_id_str:
-        session_id_str = str(uuid.uuid4())
+    session_id_str = get_session_id(req)
     session_id = uuid.UUID(session_id_str)
 
-    # Формируем запрос ТОЛЬКО с текущим сообщением (без истории из БД)
     messages = [
-        {
-            "role": "system", 
-            "content": "You are a professional translator. Your task is to translate any provided text into Russian. Output only the translated text. Do not add any comments."
-        },
-        {
-            "role": "user", 
-            "content": request.message
-        }
+        {"role": "system", "content": "Ты профессиональный переводчик. Твоя задача — переводить любой предоставленный текст на русский язык. Выводи только переведенный текст."},
+        {"role": "user", "content": request.message}
     ]
 
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": MODEL_NAME,
-        "messages": messages, # Отправляем только текущий текст!
-    }
+    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
+    payload = {"model": MODEL_NAME, "messages": messages}
 
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=60.0
-            )
+            response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=60.0)
             response.raise_for_status()
             data = response.json()
             
             choices = data.get("choices", [])
-            replies = []
-            for choice in choices:
-                content = choice.get("message", {}).get("content", "").strip()
-                if content:
-                    replies.append(content)
-            
+            replies = [choice.get("message", {}).get("content", "").strip() for choice in choices if choice.get("message", {}).get("content", "").strip()]
             ai_message = "\n\n".join(replies) if replies else "ИИ не сгенерировал ответ."
 
-        # СОХРАНЯЕМ ИСТОРИЮ В БД (только для архива)
         if db_pool:
             async with db_pool.acquire() as conn:
-                await conn.execute(
-                    "INSERT INTO chat_history (session_id, role, content) VALUES ($1, $2, $3)",
-                    session_id, "user", request.message
-                )
-                await conn.execute(
-                    "INSERT INTO chat_history (session_id, role, content) VALUES ($1, $2, $3)",
-                    session_id, "assistant", ai_message
-                )
+                await conn.execute("INSERT INTO chat_history (session_id, role, content) VALUES ($1, $2, $3)", session_id, "user", request.message)
+                await conn.execute("INSERT INTO chat_history (session_id, role, content) VALUES ($1, $2, $3)", session_id, "assistant", ai_message)
 
-        # Возвращаем ответ и обновляем куку
-        response_obj = Response(content='{"reply": "%s"}' % ai_message.replace('"', '\\"').replace('\n', '\\n'), media_type="application/json")
-        response_obj.set_cookie(
-            key="session_id", value=session_id_str, httponly=True, 
-            max_age=30*24*60*60, samesite="none", secure=True
-        )
-        return response_obj
+        return {"session_id": session_id_str, "reply": ai_message}
 
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=f"OpenRouter error: {e.response.text}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/")
-def read_root():
-    return {"status": "Backend is running"}
-
-
