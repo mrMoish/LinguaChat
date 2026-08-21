@@ -239,8 +239,6 @@ The exercise must be one of the following:
 3. Create a sentence in `{target_lang_name}` containing at least 7 words for the user to translate.
 4. Create a sentence in Russian containing at least 7 words for the user to translate.
 
-Choose the exercise that best fits the original text and its translation.
-
 Do not provide the correct answer immediately. Do not add explanations or comments.
 
     Return STRICT JSON without markdown:
