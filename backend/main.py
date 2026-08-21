@@ -14,10 +14,10 @@ app = FastAPI()
 # Убираем allow_credentials, так как куки больше не используем
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "https://ваш-фронтенд.vercel.app" 
-    ],
+    allow_origins=["https://trachat.vercel.app",
+                   "https://linguachat-x26d.onrender.com",
+                   "http://localhost:5173",
+                   "http://127.0.0.1:5173"],
     allow_methods=["*"],
     allow_headers=["*", "X-Session-Id"], # Разрешаем наш кастомный заголовок
 )
@@ -89,7 +89,7 @@ async def chat(request: ChatRequest, req: Request):
     session_id = uuid.UUID(session_id_str)
 
     messages = [
-        {"role": "system", "content": "Ты профессиональный переводчик. Твоя задача — переводить любой предоставленный текст на русский язык. Выводи только переведенный текст."},
+        {"role": "system", "content": "You are a professional translator. Your task is to translate any provided text into Russian. Output only the translated text. Do not add any comments."},
         {"role": "user", "content": request.message}
     ]
 
