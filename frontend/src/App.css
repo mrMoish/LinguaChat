@@ -255,3 +255,14 @@ body::-webkit-scrollbar-thumb:hover {
   text-transform: lowercase; /* Маленькие буквы для ненавязчивости */
   opacity: 0.8;
 }
+
+/* Стили для пустого экрана (приветственное сообщение) */
+.empty-state {
+  text-align: center;
+  color: #999; /* Светло-серый цвет */
+  margin-bottom: 2rem; /* Отступ снизу, чтобы поле ввода не прилипало вплотную */
+  padding: 0 1.5rem; /* Отступы по бокам, чтобы текст не прилипал к краям экрана */
+  font-size: 1rem;
+  line-height: 1.5;
+  max-width: 400px;
+}
