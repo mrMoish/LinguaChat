@@ -123,9 +123,9 @@ async def chat(request: ChatRequest, req: Request):
         }
 
         Rules for the reply:
-        - If Step 1 is true: Set target_language_code and target_language_name. Reply in Russian confirming the target language (e.g., "Отлично! Теперь я буду переводить ваши тексты на английский.").
+        - If Step 1 is true: Set target_language_code and target_language_name. Reply in Russian confirming the target language (e.g., "Отлично! Теперь я буду переводить ваши тексты на английский и давать вам мини уроки.").
         - If Step 2 is true (user writes in Russian): Set target_language_code to null. Reply in Russian asking which language they want to learn (e.g., "На какой язык вы хотите переводить текст?").
-        - If Step 3 is true (user writes in a foreign language): Set target_language_code and target_language_name to the detected language. Reply in Russian with the translation of the user's message (e.g., "Я определил ваш язык как Французский. Перевод: Здравствуйте. Теперь я буду переводить ваши русские тексты на французский.").
+        - If Step 3 is true (the user writes in a foreign language): set target_language_code and target_language_name to the detected language. Reply in Russian, providing only the translation of the user's message without comments.
         """
         
         messages = [
