@@ -266,3 +266,43 @@ body::-webkit-scrollbar-thumb:hover {
   line-height: 1.5;
   max-width: 400px;
 }
+
+/* Кнопка Мини-урок */
+.lesson-btn {
+  background-color: transparent;
+  color: #666;
+  border: 1px solid #ddd;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+  margin-top: 8px;
+  transition: all 0.2s;
+}
+
+.lesson-btn:hover {
+  background-color: #f1f1f1;
+  color: #333;
+}
+
+.lesson-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Сообщение с уроком */
+.message.lesson-message {
+  background-color: #f0f7ff; /* Очень светло-голубой */
+  border: 1px solid #d0e3ff;
+  color: #1d1d1f;
+  border-radius: 18px;
+  border-bottom-left-radius: 6px;
+  padding: 1rem 1.25rem;
+}
+
+/* Заглушка загрузки урока */
+.message.lesson-loading {
+  background-color: #f0f7ff;
+  border: 1px solid #d0e3ff;
+}
