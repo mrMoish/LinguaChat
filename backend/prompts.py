@@ -187,6 +187,6 @@ Do not provide the correct answer immediately. Do not add explanations or commen
     Return STRICT JSON without markdown:
     {{
       "lesson_text": "🎓 Мини-урок! ['Ответь' or 'Переведи']\\n\\n[Question or phrase]"
-    }}''
+    }}'''
 
         
