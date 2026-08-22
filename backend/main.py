@@ -7,6 +7,7 @@ from pydantic import BaseModel
 import httpx
 import asyncpg
 from dotenv import load_dotenv
+from prompts import SETUP_SYSTEM_PROMPT, get_translation_prompt, get_lesson_prompt
 
 load_dotenv()
 
@@ -120,44 +121,14 @@ async def chat(request: ChatRequest, req: Request):
                 target_lang_name = row["target_language_name"]
 
     if not target_lang_code:
-        system_prompt = """You are a language learning setup assistant. Evaluate the user's first message step by step.
-        
-        Step 1: Is the message a phrase indicating the language they want to learn? (e.g., "I learn English", "У меня B2 немецкий", "Spanish").
-        Step 2: If Step 1 is false, is the message written in Russian?
-        Step 3: If Step 2 is false, the message is written in a foreign language.
-
-        Based on the evaluation, you MUST output STRICT JSON without any markdown formatting:
-        {
-          "target_language_name": "Name in Russian or null",
-          "target_language_code": "ISO 639-1 code (e.g., 'en', 'fr') or null",
-          "source_language_name": "Name in Russian of the user's input language",
-          "reply": "Your reply in Russian"
-        }
-
-        Rules for the reply:
-        - If Step 1 is true: Set target_language_code and target_language_name. Reply in Russian confirming the target language (e.g., "Отлично! Теперь я буду переводить ваши тексты на английский и давать вам мини уроки.").
-        - If Step 2 is true (user writes in Russian): Set target_language_code to null. Reply in Russian asking which language they want to learn (e.g., "На какой язык вы хотите переводить текст?").
-        - If Step 3 is true (the user writes in a foreign language): set target_language_code and target_language_name to the detected language. Reply in Russian, providing only the translation of the user's message without comments.
-        """
-        
         messages = [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": SETUP_SYSTEM_PROMPT},
             {"role": "user", "content": request.message}
         ]
     else:
         # --- РЕЖИМ 2: Строгий перевод ---
-        system_prompt = f"""You are a professional translator. The user's target language is {target_lang_name} ({target_lang_code}).
-        Strictly translate the user's text. Do not add any comments, notes, or conversational text.
-        If the user writes in {target_lang_name}, translate to Russian.
-        If the user writes in Russian, translate to {target_lang_name}.
-        If the user writes in any other language, translate to Russian.
-        You MUST output STRICT JSON without any markdown formatting:
-        {{
-          "source_language_name": "Name of the input language in Russian",
-          "translation": "The translated text"
-        }}"""
         messages = [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": get_translation_prompt(target_lang_name, target_lang_code)},
             {"role": "user", "content": request.message}
         ]
 
@@ -232,27 +203,7 @@ async def mini_lesson(request: LessonRequest, req: Request):
                 proficiency_level = row["proficiency_level"] if row["proficiency_level"] is not None else 0
 
     # Используем уровень в промпте
-    system_prompt = f"""You are a friendly and encouraging language tutor. The user's target language is {target_lang_name}.
-    The user's current proficiency level is {proficiency_level}% (on a scale of 0 to 100).
-    
-    The user originally wrote: "{request.user_text}"
-    The translation was: "{request.ai_text}"
-
-Create one short and engaging exercise based on these texts.
-
-The exercise must be one of the following:
-
-1. Ask the user a question in Russian that contains at least 7 words.
-2. Ask the user a question in `{target_lang_name}` that contains at least 7 words.
-3. Create a sentence in `{target_lang_name}` containing at least 7 words for the user to translate.
-4. Create a sentence in Russian containing at least 7 words for the user to translate.
-
-Do not provide the correct answer immediately. Do not add explanations or comments.
-
-    Return STRICT JSON without markdown:
-    {{
-      "lesson_text": "🎓 Мини-урок! ['Ответь' or 'Переведи']\\n\\n[Question or phrase]"
-    }}"""
+    system_prompt = get_lesson_prompt(target_lang_name, proficiency_level, request.user_text, request.ai_text)
 
     headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
     payload = {
