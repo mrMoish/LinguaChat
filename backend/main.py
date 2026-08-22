@@ -44,13 +44,15 @@ async def startup():
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                     )
                 ''')
-                await conn.execute('''
+                                await conn.execute('''
                     CREATE TABLE IF NOT EXISTS user_settings (
                         session_id UUID PRIMARY KEY,
                         target_language_code VARCHAR(10),
                         target_language_name VARCHAR(100)
                     )
                 ''')
+                # ДОБАВЛЯЕМ КОЛОНКУ УРОВНЯ ВЛАДЕНИЯ (0-100)
+                await conn.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS proficiency_level INTEGER DEFAULT 0")
                 # НОВЫЕ КОЛОНКИ (добавляются, если их еще нет)
                 await conn.execute("ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS is_lesson BOOLEAN DEFAULT FALSE")
                 await conn.execute("ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS source_language VARCHAR(50)")
@@ -219,16 +221,22 @@ async def mini_lesson(request: LessonRequest, req: Request):
     session_id = uuid.UUID(session_id_str)
 
     target_lang_name = "иностранный"
+    proficiency_level = 0
+    
+    # Получаем язык и текущий уровень из БД
     if db_pool:
         async with db_pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT target_language_name FROM user_settings WHERE session_id = $1", session_id)
+            row = await conn.fetchrow("SELECT target_language_name, proficiency_level FROM user_settings WHERE session_id = $1", session_id)
             if row:
                 target_lang_name = row["target_language_name"]
+                proficiency_level = row["proficiency_level"] if row["proficiency_level"] is not None else 0
 
-    system_prompt = f"""You are a friendly and encouraging language tutor. The user's target language is `{target_lang_name}`.
-
-The user originally wrote: `{request.user_text}`
-Translation: `{request.ai_text}`
+    # Используем уровень в промпте
+    system_prompt = f"""You are a friendly and encouraging language tutor. The user's target language is {target_lang_name}.
+    The user's current proficiency level is {proficiency_level}% (on a scale of 0 to 100).
+    
+    The user originally wrote: "{request.user_text}"
+    The translation was: "{request.ai_text}"
 
 Create one short and engaging exercise based on these texts.
 
@@ -244,6 +252,40 @@ Do not provide the correct answer immediately. Do not add explanations or commen
     Return STRICT JSON without markdown:
     {{
       "lesson_text": "🎓 Мини-урок! ['Ответь' or 'Переведи']\\n\\n[Question or phrase]"
+    }}"""
+@app.post("/api/lesson")
+async def mini_lesson(request: LessonRequest, req: Request):
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(status_code=500, detail="OpenRouter API Key not configured")
+
+    session_id_str = get_session_id(req)
+    session_id = uuid.UUID(session_id_str)
+
+    target_lang_name = "иностранный"
+    proficiency_level = 0
+    
+    # Получаем язык и текущий уровень из БД
+    if db_pool:
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT target_language_name, proficiency_level FROM user_settings WHERE session_id = $1", session_id)
+            if row:
+                target_lang_name = row["target_language_name"]
+                proficiency_level = row["proficiency_level"] if row["proficiency_level"] is not None else 0
+
+    # Используем уровень в промпте
+    system_prompt = f"""You are a friendly and encouraging language tutor. The user's target language is {target_lang_name}.
+    The user's current proficiency level is {proficiency_level}% (on a scale of 0 to 100).
+    
+    The user originally wrote: "{request.user_text}"
+    The translation was: "{request.ai_text}"
+    
+    Create a short, engaging mini-lesson based on these texts. Make sure the difficulty of the lesson corresponds to the user's proficiency level ({proficiency_level}%).
+    1. Point out one interesting vocabulary word or a simple grammar rule from the texts.
+    2. Give the user a quick task: either ask them to translate a slightly modified sentence from Russian to {target_lang_name}, or ask a simple question in Russian that requires a short answer.
+    
+    Return STRICT JSON without markdown:
+    {{
+      "lesson_text": "🎓 Мини-урок!\\n\\n[Your explanation]\\n\\nЗадание: [Your task]"
     }}"""
 
     headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
@@ -265,16 +307,23 @@ Do not provide the correct answer immediately. Do not add explanations or commen
             
             if db_pool:
                 async with db_pool.acquire() as conn:
-                    # СОХРАНЯЕМ ФЛАГ is_lesson = TRUE
+                    # Сохраняем урок в историю
                     await conn.execute(
                         "INSERT INTO chat_history (session_id, role, content, is_lesson) VALUES ($1, $2, $3, TRUE)",
                         session_id, "assistant", lesson_text
+                    )
+                    
+                    # УВЕЛИЧИВАЕМ УРОВЕНЬ ВЛАДЕНИЯ НА 5% (максимум 100)
+                    new_level = min(100, proficiency_level + 5)
+                    await conn.execute(
+                        "UPDATE user_settings SET proficiency_level = $1 WHERE session_id = $2",
+                        new_level, session_id
                     )
 
             return {"lesson": lesson_text}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
+        
 @app.get("/")
 def read_root():
     return {"status": "Backend is running"}
