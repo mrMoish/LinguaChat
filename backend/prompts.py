@@ -170,8 +170,8 @@ def get_lesson_prompt(target_lang_name, proficiency_level, user_text, ai_text):
   return f'''You are a friendly and encouraging language tutor. The user's target language is {target_lang_name}.
     The user's current proficiency level is {proficiency_level}% (on a scale of 0 to 100).
     
-    The user originally wrote: "{request.user_text}"
-    The translation was: "{request.ai_text}"
+    The user originally wrote: "{user_text}"
+    The translation was: "{ai_text}"
 
 Create one short and engaging exercise based on these texts.
 
