@@ -283,12 +283,35 @@ body::-webkit-scrollbar-thumb:hover {
 
 /* Сообщение с уроком */
 .message.lesson-message {
+  position: relative; /* Добавили для позиционирования крестика */
   background-color: #f0f7ff;
   border: 1px solid #d0e3ff;
   color: #1d1d1f;
   border-radius: 18px;
   border-bottom-left-radius: 6px;
   padding: 1rem 1.25rem;
+}
+
+/* Кнопка закрытия урока (крестик) */
+.lesson-close-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  background: transparent;
+  border: none;
+  color: #888;
+  cursor: pointer;
+  padding: 8px; /* Большая область клика */
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s, color 0.2s;
+}
+
+.lesson-close-btn:hover {
+  background-color: #d0e3ff;
+  color: #333;
 }
 
 .message.lesson-loading {
@@ -300,23 +323,23 @@ body::-webkit-scrollbar-thumb:hover {
 /* ===== КАРТОЧКА ПРОВЕРКИ УРОВНЯ ========== */
 /* ========================================= */
 
+/* Карточка проверки уровня */
 .message.assessment-card {
   display: flex;
   flex-direction: column;
   width: 100%;
-  /* Высчитываем точную высоту: вся высота экрана минус 250px (поле ввода + отступы) */
   height: calc(100dvh - 250px);
   min-height: 280px;
   background-color: #f0f7ff;
   border: 1px solid #d0e3ff;
   border-radius: 18px;
-  padding: 20px;
+  padding: 30px; /* Увеличили отступы внутри карточки с 20px до 30px */
   box-sizing: border-box;
 }
 
 /* Обертка текста и ползунка */
 .assessment-content-wrapper {
-  flex: 1; /* Занимает всё доступное место над кнопкой */
+  flex: 1;
   display: flex;
   align-items: stretch;
   overflow: hidden;
@@ -327,15 +350,14 @@ body::-webkit-scrollbar-thumb:hover {
 .assessment-text-area {
   flex: 1;
   overflow-y: auto;
-  padding-right: 40px;
+  padding: 0 50px 0 20px;
   font-size: 1.1rem;
   line-height: 2.2;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #333;
+  color: #666; /* Новый, более светлый цвет текста */
 }
-
 .assessment-text-area .beginner-text {
   text-align: center;
   font-weight: bold;

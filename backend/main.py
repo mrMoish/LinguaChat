@@ -7,7 +7,8 @@ from pydantic import BaseModel
 import httpx
 import asyncpg
 from dotenv import load_dotenv
-from prompts import SETUP_SYSTEM_PROMPT, get_translation_prompt, get_lesson_prompt, get_assessment_prompt
+from prompts import SETUP_SYSTEM_PROMPT, get_translation_prompt, get_lesson_prompt, get_assessment_prompt, get_single_word_prompt
+import random
 
 load_dotenv()
 
@@ -34,7 +35,15 @@ async def startup():
     global db_pool
     if DATABASE_URL:
         try:
-            db_pool = await asyncpg.create_pool(DATABASE_URL)
+            # Обновленная строка создания пула
+            db_pool = await asyncpg.create_pool(
+                DATABASE_URL,
+                min_size=1,
+                max_size=5,
+                timeout=30,
+                command_timeout=60,
+                max_inactive_connection_lifetime=60 # FIX: это сделано так как render sql бесплатный тариф, при платном тарифе для оптимизации наверное нужно убрать; Закрываем простаивающие соединения до того, как это сделает Render
+            )
             async with db_pool.acquire() as conn:
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS chat_history (
@@ -52,12 +61,9 @@ async def startup():
                         target_language_name VARCHAR(100)
                     )
                 ''')
-                # ДОБАВЛЯЕМ КОЛОНКУ УРОВНЯ ВЛАДЕНИЯ (0-100)
                 await conn.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS proficiency_level INTEGER DEFAULT 0")
-                # НОВЫЕ КОЛОНКИ (добавляются, если их еще нет)
                 await conn.execute("ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS is_lesson BOOLEAN DEFAULT FALSE")
                 await conn.execute("ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS source_language VARCHAR(50)")
-                # ДОБАВЛЯЕМ КОЛОНКУ УРОВНЯ ВЛАДЕНИЯ
                 await conn.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS proficiency_level INTEGER")
                 await conn.execute("ALTER TABLE user_settings ALTER COLUMN proficiency_level DROP NOT NULL")
                 await conn.execute("UPDATE user_settings SET proficiency_level = NULL WHERE proficiency_level = 0")
@@ -141,8 +147,20 @@ async def chat(request: ChatRequest, req: Request):
             {"role": "user", "content": request.message}
         ]
     else:
+        # --- РЕЖИМ 2: Строгий перевод ---
+        # Проверяем, состоит ли сообщение из одного слова (убираем пробелы и знаки препинания)
+        cleaned_message = request.message.strip().replace('.', '').replace(',', '').replace('!', '').replace('?', '')
+        is_single_word = len(cleaned_message.split()) == 1
+
+        if is_single_word:
+            # Промпт для одного слова (словарь)
+            system_content = get_single_word_prompt(target_lang_name, target_lang_code)
+        else:
+            # Обычный промпт для предложений
+            system_content = get_translation_prompt(target_lang_name, target_lang_code)
+
         messages = [
-            {"role": "system", "content": get_translation_prompt(target_lang_name, target_lang_code)},
+            {"role": "system", "content": system_content},
             {"role": "user", "content": request.message}
         ]
 
@@ -223,7 +241,7 @@ async def mini_lesson(request: LessonRequest, req: Request):
 
     # --- РЕЖИМ 1: Уровень еще не определен (Генерация проверочного текста) ---
     if proficiency_level is None:
-        system_prompt = get_assessment_prompt(target_lang_name)
+        system_prompt = get_assessment_prompt(target_lang_name, request.user_text, request.ai_text)
         payload = {
             "model": MODEL_NAME,
             "messages": [{"role": "system", "content": system_prompt}],
@@ -244,7 +262,8 @@ async def mini_lesson(request: LessonRequest, req: Request):
             raise HTTPException(status_code=500, detail=str(e))
 
     # --- РЕЖИМ 2: Обычный мини-урок ---
-    system_prompt = get_lesson_prompt(target_lang_name, proficiency_level, request.user_text, request.ai_text)
+    question_or_phrase = [('Ответь', 'Question'),('Переведи', 'Phrase')][random.choice([0, 1])]
+    system_prompt = get_lesson_prompt(target_lang_name, proficiency_level, request.user_text, request.ai_text, question_or_phrase)
     payload = {
         "model": MODEL_NAME,
         "messages": [{"role": "system", "content": system_prompt}],
@@ -288,10 +307,10 @@ async def set_level(request: SetLevelRequest, req: Request):
     }
     proficiency_level = level_map.get(request.level, 0)
 
-    # if db_pool:
-    #     async with db_pool.acquire() as conn:
-    #         await conn.execute("UPDATE user_settings SET proficiency_level = $1 WHERE session_id = $2",
-    #                            proficiency_level, session_id)
+    if db_pool:
+        async with db_pool.acquire() as conn:
+            await conn.execute("UPDATE user_settings SET proficiency_level = $1 WHERE session_id = $2",
+                               proficiency_level, session_id)
 
     return {"status": "ok"}
         

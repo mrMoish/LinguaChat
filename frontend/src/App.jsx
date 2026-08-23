@@ -240,6 +240,15 @@ function App() {
     }
   };
 
+  // Удаление мини-урока
+  const dismissLesson = (msgIdx) => {
+    const newMessages = [...messages];
+    newMessages.splice(msgIdx, 1); // Удаляем сообщение по индексу
+    setMessages(newMessages);
+    // Обновляем localStorage
+    localStorage.setItem('translator_chat_history', JSON.stringify(newMessages.filter(m => !m.isError && !m.isAssessment)));
+  };
+
   return (
     <div className={`app-container ${messages.length === 0 ? 'empty-state-app' : 'chat-active-app'}`}>
 
@@ -265,7 +274,7 @@ function App() {
                     <div className="assessment-content-wrapper">
                       <div className="assessment-text-area">
                         {msg.currentLevelIndex === 0 ? (
-                          <p className="beginner-text">Я только начал учить целевой язык</p>
+                          <p className="beginner-text">Я только начал учить язык</p>
                         ) : (
                           <div style={{ whiteSpace: 'pre-wrap' }}>
                             {msg.texts[msg.currentLevelIndex]}
@@ -303,8 +312,17 @@ function App() {
             return (
               <div key={idx} className={`message-wrapper ${msg.role}`}>
                 <div className={`message ${msg.role} ${msg.isError ? 'error-message' : ''} ${msg.isLesson ? 'lesson-message' : ''}`}>
-                  <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
 
+                  {/* Кнопка закрытия урока (только для последнего сообщения) */}
+                  {msg.isLesson && isLastMessage && (
+                    <button className="lesson-close-btn" onClick={() => dismissLesson(idx)} aria-label="Закрыть">
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                      </svg>
+                    </button>
+                  )}
+                  <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
                   {msg.isError && (
                     <button className="retry-btn" onClick={() => handleRetry(idx)} disabled={isLoading}>
                       Попробовать снова
