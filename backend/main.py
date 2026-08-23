@@ -7,7 +7,7 @@ from pydantic import BaseModel
 import httpx
 import asyncpg
 from dotenv import load_dotenv
-from prompts import SETUP_SYSTEM_PROMPT, get_translation_prompt, get_lesson_prompt
+from prompts import SETUP_SYSTEM_PROMPT, get_translation_prompt, get_lesson_prompt, get_assessment_prompt
 
 load_dotenv()
 
@@ -57,6 +57,10 @@ async def startup():
                 # НОВЫЕ КОЛОНКИ (добавляются, если их еще нет)
                 await conn.execute("ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS is_lesson BOOLEAN DEFAULT FALSE")
                 await conn.execute("ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS source_language VARCHAR(50)")
+                # ДОБАВЛЯЕМ КОЛОНКУ УРОВНЯ ВЛАДЕНИЯ
+                await conn.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS proficiency_level INTEGER")
+                await conn.execute("ALTER TABLE user_settings ALTER COLUMN proficiency_level DROP NOT NULL")
+                await conn.execute("UPDATE user_settings SET proficiency_level = NULL WHERE proficiency_level = 0")
         except Exception as e:
             print(f"DB Error: {e}")
     else:
@@ -192,54 +196,89 @@ async def mini_lesson(request: LessonRequest, req: Request):
     session_id = uuid.UUID(session_id_str)
 
     target_lang_name = "иностранный"
-    proficiency_level = 0
-    
-    # Получаем язык и текущий уровень из БД
+    proficiency_level = None
+
     if db_pool:
         async with db_pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT target_language_name, proficiency_level FROM user_settings WHERE session_id = $1", session_id)
+            row = await conn.fetchrow(
+                "SELECT target_language_name, proficiency_level FROM user_settings WHERE session_id = $1", session_id)
             if row:
                 target_lang_name = row["target_language_name"]
-                proficiency_level = row["proficiency_level"] if row["proficiency_level"] is not None else 0
+                proficiency_level = row["proficiency_level"]
 
-    # Используем уровень в промпте
+    # --- РЕЖИМ 1: Уровень еще не определен (Генерация проверочного текста) ---
+    if proficiency_level is None:
+        system_prompt = get_assessment_prompt(target_lang_name)
+        payload = {
+            "model": MODEL_NAME,
+            "messages": [{"role": "system", "content": system_prompt}],
+            "response_format": {"type": "json_object"}
+        }
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers,
+                                             json=payload, timeout=60.0)
+                response.raise_for_status()
+                data = response.json()
+                parsed = json.loads(data["choices"][0]["message"]["content"].strip())
+                assessment_text = parsed.get("assessment_text", "Ошибка генерации текста.")
+
+                return {"action": "assess", "text": assessment_text}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    # --- РЕЖИМ 2: Обычный мини-урок ---
     system_prompt = get_lesson_prompt(target_lang_name, proficiency_level, request.user_text, request.ai_text)
-
-    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
     payload = {
-        "model": MODEL_NAME, 
+        "model": MODEL_NAME,
         "messages": [{"role": "system", "content": system_prompt}],
         "response_format": {"type": "json_object"}
     }
 
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=60.0)
+            response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload,
+                                         timeout=60.0)
             response.raise_for_status()
             data = response.json()
-            
-            raw_text = data["choices"][0]["message"]["content"].strip()
-            parsed = json.loads(raw_text)
+            parsed = json.loads(data["choices"][0]["message"]["content"].strip())
             lesson_text = parsed.get("lesson_text", "Не удалось создать урок.")
-            
+
             if db_pool:
                 async with db_pool.acquire() as conn:
-                    # Сохраняем урок в историю
                     await conn.execute(
                         "INSERT INTO chat_history (session_id, role, content, is_lesson) VALUES ($1, $2, $3, TRUE)",
-                        session_id, "assistant", lesson_text
-                    )
-                    
-                    # УВЕЛИЧИВАЕМ УРОВЕНЬ ВЛАДЕНИЯ НА 5% (максимум 100)
+                        session_id, "assistant", lesson_text)
                     new_level = min(100, proficiency_level + 5)
-                    await conn.execute(
-                        "UPDATE user_settings SET proficiency_level = $1 WHERE session_id = $2",
-                        new_level, session_id
-                    )
+                    await conn.execute("UPDATE user_settings SET proficiency_level = $1 WHERE session_id = $2",
+                                       new_level, session_id)
 
-            return {"lesson": lesson_text}
+            return {"action": "lesson", "lesson": lesson_text}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class SetLevelRequest(BaseModel):
+    level: str  # "0", "A1", "A2", "B1", "B2", "C1", "C2"
+
+
+@app.post("/api/set_level")
+async def set_level(request: SetLevelRequest, req: Request):
+    session_id_str = get_session_id(req)
+    session_id = uuid.UUID(session_id_str)
+
+    level_map = {
+        "0": 0, "A1": 10, "A2": 25, "B1": 40, "B2": 60, "C1": 80, "C2": 95
+    }
+    proficiency_level = level_map.get(request.level, 0)
+
+    if db_pool:
+        async with db_pool.acquire() as conn:
+            await conn.execute("UPDATE user_settings SET proficiency_level = $1 WHERE session_id = $2",
+                               proficiency_level, session_id)
+
+    return {"status": "ok"}
         
 @app.get("/")
 def read_root():

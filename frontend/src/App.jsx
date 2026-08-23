@@ -8,6 +8,9 @@ function App() {
   const [isInitializing, setIsInitializing] = useState(true);
   const [sessionId, setSessionId] = useState(null);
   const chatContainerRef = useRef(null);
+  const [showLevelModal, setShowLevelModal] = useState(false);
+  const [assessmentText, setAssessmentText] = useState('');
+  const [selectedLevel, setSelectedLevel] = useState('A1');
 
   useEffect(() => {
     const initChat = async () => {
@@ -137,48 +140,63 @@ function App() {
     await sendRequest(errorMsgObj.originalText, messagesWithoutError);
   };
 
-  // Генерация мини-урока
   const generateLesson = async (idx) => {
     if (isLoading) return;
-    
+
     const userMsg = messages[idx - 1];
     const aiMsg = messages[idx];
-    
     if (!userMsg || userMsg.role !== 'user' || !aiMsg || aiMsg.role !== 'assistant') return;
 
-    setIsLoading(true); // Включаем загрузку (появятся три точки внизу)
+    setIsLoading(true);
 
     try {
-      const backendUrl = import.meta.env.VITE_BACKEND_URL || ''; 
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
       const headers = { 'Content-Type': 'application/json' };
       if (sessionId) headers['X-Session-Id'] = sessionId;
 
       const response = await fetch(`${backendUrl}/api/lesson`, {
         method: 'POST',
         headers: headers,
-        body: JSON.stringify({ 
-          user_text: userMsg.content, 
-          ai_text: aiMsg.content 
-        })
+        body: JSON.stringify({ user_text: userMsg.content, ai_text: aiMsg.content })
       });
 
       if (!response.ok) throw new Error('Network response was not ok');
-      
+
       const data = await response.json();
-      
-      // Просто добавляем урок в конец массива сообщений
-      const finalMessages = [...messages];
-      finalMessages.push({ role: 'assistant', content: data.lesson, isLesson: true });
-      
-      setMessages(finalMessages);
-      localStorage.setItem('translator_chat_history', JSON.stringify(finalMessages.filter(m => !m.isError)));
+
+      if (data.action === 'assess') {
+        // Если бэкенд вернул проверочный текст
+        setAssessmentText(data.text);
+        setSelectedLevel('A1'); // По умолчанию A1
+        setShowLevelModal(true);
+      } else {
+        // Если бэкенд вернул обычный урок
+        const finalMessages = [...messages];
+        finalMessages.push({ role: 'assistant', content: data.lesson, isLesson: true });
+        setMessages(finalMessages);
+        localStorage.setItem('translator_chat_history', JSON.stringify(finalMessages.filter(m => !m.isError)));
+      }
     } catch (error) {
       console.error('Error:', error);
-      const finalMessages = [...messages];
-      finalMessages.push({ role: 'assistant', content: 'Не удалось загрузить урок.', isError: true });
-      setMessages(finalMessages);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleSaveLevel = async () => {
+    try {
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
+      const headers = { 'Content-Type': 'application/json' };
+      if (sessionId) headers['X-Session-Id'] = sessionId;
+
+      await fetch(`${backendUrl}/api/set_level`, {
+        method: 'POST',
+        headers: headers,
+        body: JSON.stringify({ level: selectedLevel })
+      });
+      setShowLevelModal(false);
+    } catch (error) {
+      console.error('Error saving level:', error);
     }
   };
 
@@ -301,6 +319,37 @@ function App() {
           </svg>
         </button>
       </div>
+      {/* Модальное окно определения уровня */}
+      {showLevelModal && (
+        <div className="modal-overlay" onClick={() => setShowLevelModal(false)}>
+          <div className="modal-box" onClick={e => e.stopPropagation()}>
+            <h3>Определите свой уровень</h3>
+            <div className="modal-content">
+              {selectedLevel === '0' ? (
+                <p className="beginner-text">Я только начал учить целевой язык</p>
+              ) : (
+                <div className="assessment-text">{assessmentText}</div>
+              )}
+            </div>
+
+            {/* Вертикальный ползунок */}
+            <div className="level-slider-container">
+              {["C2", "C1", "B2", "B1", "A2", "A1", "0"].map(lvl => (
+                <div
+                  key={lvl}
+                  className={`level-item ${selectedLevel === lvl ? 'active' : ''}`}
+                  onClick={() => setSelectedLevel(lvl)}
+                >
+                  <span className="level-label">{lvl}</span>
+                  <span className="level-dot"></span>
+                </div>
+              ))}
+            </div>
+
+            <button className="modal-save-btn" onClick={handleSaveLevel}>Сохранить</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

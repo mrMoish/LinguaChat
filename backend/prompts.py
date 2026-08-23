@@ -190,3 +190,18 @@ Do not provide the correct answer immediately. Do not add explanations or commen
     }}'''
 
         
+# Промпт для проверочного текста (определение уровня)
+def get_assessment_prompt(target_lang_name):
+    return f"""Generate a text in {target_lang_name} to assess the user's language level.
+The text should be a single cohesive story, but it must gradually increase in difficulty.
+- The first 2 lines should be A1 level (very basic words and grammar).
+- The next 2 lines A2 level.
+- The next 2 lines B1 level.
+- The next 2 lines B2 level.
+- The next 2 lines C1 level.
+- The final 2 lines C2 level (complex grammar and advanced vocabulary).
+Total exactly 12 lines. Do not add any labels like "A1:" or "B2:". Just output the raw text lines separated by newlines.
+Return STRICT JSON without markdown:
+{{
+  "assessment_text": "The generated text in {target_lang_name}"
+}}"""
