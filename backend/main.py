@@ -84,28 +84,37 @@ def get_session_id(req: Request):
         session_id_str = str(uuid.uuid4())
     return session_id_str
 
+
 @app.get("/api/history")
 async def get_history(req: Request):
     session_id_str = get_session_id(req)
     session_id = uuid.UUID(session_id_str)
-    
+
+    target_lang_code = None
     if db_pool:
         async with db_pool.acquire() as conn:
-            # ДОБАВЛЯЕМ is_lesson и source_language в выборку
+            # Проверяем, выбран ли язык
+            row_settings = await conn.fetchrow("SELECT target_language_code FROM user_settings WHERE session_id = $1",
+                                               session_id)
+            if row_settings:
+                target_lang_code = row_settings["target_language_code"]
+
             rows = await conn.fetch(
                 "SELECT role, content, is_lesson, source_language FROM chat_history WHERE session_id = $1 ORDER BY created_at ASC",
                 session_id
             )
-            # Преобразуем snake_case из БД в camelCase для фронтенда
             history = [{
-                "role": row["role"], 
-                "content": row["content"], 
-                "isLesson": row["is_lesson"], 
+                "role": row["role"],
+                "content": row["content"],
+                "isLesson": row["is_lesson"],
                 "source_language": row["source_language"]
             } for row in rows]
-            return {"session_id": session_id_str, "history": history}
-    
-    return {"session_id": session_id_str, "history": []}
+
+            # Возвращаем историю и флаг выбранного языка
+            return {"session_id": session_id_str, "history": history, "target_language_code": target_lang_code}
+
+    return {"session_id": session_id_str, "history": [], "target_language_code": None}
+
 
 @app.post("/api/chat")
 async def chat(request: ChatRequest, req: Request):
@@ -119,7 +128,9 @@ async def chat(request: ChatRequest, req: Request):
     target_lang_name = None
     if db_pool:
         async with db_pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT target_language_code, target_language_name FROM user_settings WHERE session_id = $1", session_id)
+            row = await conn.fetchrow(
+                "SELECT target_language_code, target_language_name FROM user_settings WHERE session_id = $1",
+                session_id)
             if row:
                 target_lang_code = row["target_language_code"]
                 target_lang_name = row["target_language_name"]
@@ -130,7 +141,6 @@ async def chat(request: ChatRequest, req: Request):
             {"role": "user", "content": request.message}
         ]
     else:
-        # --- РЕЖИМ 2: Строгий перевод ---
         messages = [
             {"role": "system", "content": get_translation_prompt(target_lang_name, target_lang_code)},
             {"role": "user", "content": request.message}
@@ -138,40 +148,41 @@ async def chat(request: ChatRequest, req: Request):
 
     headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
     payload = {
-        "model": MODEL_NAME, 
+        "model": MODEL_NAME,
         "messages": messages,
         "response_format": {"type": "json_object"}
     }
 
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=60.0)
+            response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload,
+                                         timeout=60.0)
             response.raise_for_status()
             data = response.json()
-            
+
             raw_text = data["choices"][0]["message"]["content"].strip()
             parsed = json.loads(raw_text)
-            
-            # Извлекаем исходный язык из ответа ИИ
+
             source_lang_name = parsed.get("source_language_name", "")
-            
+
             if not target_lang_code:
                 ai_reply = parsed.get("reply", "Ошибка обработки.")
                 detected_lang_code = parsed.get("target_language_code")
                 detected_lang_name = parsed.get("target_language_name")
-                
+
                 if detected_lang_code and db_pool:
                     async with db_pool.acquire() as conn:
                         await conn.execute(
-                            "INSERT INTO user_settings (session_id, target_language_code, target_language_name) VALUES ($1, $2, $3) ON CONFLICT (session_id) DO UPDATE SET target_language_code = $2, target_language_name = $3",
+                            "INSERT INTO user_settings (session_id, target_language_code, target_language_name, proficiency_level) VALUES ($1, $2, $3, NULL) ON CONFLICT (session_id) DO UPDATE SET target_language_code = $2, target_language_name = $3, proficiency_level = NULL",
                             session_id, detected_lang_code, detected_lang_name
                         )
+                    # Обновляем переменную, чтобы передать на фронтенд, что язык теперь выбран
+                    target_lang_code = detected_lang_code
             else:
                 ai_reply = parsed.get("translation", "Ошибка перевода.")
 
         if db_pool:
             async with db_pool.acquire() as conn:
-                # СОХРАНЯЕМ source_language для сообщения пользователя
                 await conn.execute(
                     "INSERT INTO chat_history (session_id, role, content, source_language) VALUES ($1, $2, $3, $4)",
                     session_id, "user", request.message, source_lang_name
@@ -181,11 +192,12 @@ async def chat(request: ChatRequest, req: Request):
                     session_id, "assistant", ai_reply
                 )
 
-        return {"session_id": session_id_str, "reply": ai_reply, "source_language": source_lang_name}
+        # Возвращаем target_lang_code (он будет null, если бот спросил про язык)
+        return {"session_id": session_id_str, "reply": ai_reply, "source_language": source_lang_name,
+                "target_language_code": target_lang_code}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.post("/api/lesson")
 async def mini_lesson(request: LessonRequest, req: Request):
@@ -206,6 +218,9 @@ async def mini_lesson(request: LessonRequest, req: Request):
                 target_lang_name = row["target_language_name"]
                 proficiency_level = row["proficiency_level"]
 
+    # Заголовки вынесены наверх, чтобы они были доступны в обоих режимах
+    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
+
     # --- РЕЖИМ 1: Уровень еще не определен (Генерация проверочного текста) ---
     if proficiency_level is None:
         system_prompt = get_assessment_prompt(target_lang_name)
@@ -222,9 +237,9 @@ async def mini_lesson(request: LessonRequest, req: Request):
                 response.raise_for_status()
                 data = response.json()
                 parsed = json.loads(data["choices"][0]["message"]["content"].strip())
-                assessment_text = parsed.get("assessment_text", "Ошибка генерации текста.")
-
-                return {"action": "assess", "text": assessment_text}
+                texts = parsed.get("texts", ["", "Ошибка генерации.", "", "", "", "", ""])
+                # Возвращаем массив текстов на фронтенд
+                return {"action": "assess", "texts": texts}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
@@ -273,10 +288,10 @@ async def set_level(request: SetLevelRequest, req: Request):
     }
     proficiency_level = level_map.get(request.level, 0)
 
-    if db_pool:
-        async with db_pool.acquire() as conn:
-            await conn.execute("UPDATE user_settings SET proficiency_level = $1 WHERE session_id = $2",
-                               proficiency_level, session_id)
+    # if db_pool:
+    #     async with db_pool.acquire() as conn:
+    #         await conn.execute("UPDATE user_settings SET proficiency_level = $1 WHERE session_id = $2",
+    #                            proficiency_level, session_id)
 
     return {"status": "ok"}
         

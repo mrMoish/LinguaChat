@@ -1,18 +1,18 @@
 :root {
-  --bg-color: #ffffff; 
+  --bg-color: #ffffff;
   --text-color: #1d1d1f;
-  --user-bubble: #f1f1f1; 
+  --user-bubble: #f1f1f1;
   --border-color: #e5e5e5;
   --accent-color: #007aff;
   --icon-btn-bg: #f1f1f1;
   --icon-btn-color: #333333;
 }
 
-* { 
-  box-sizing: border-box; 
-  margin: 0; 
-  padding: 0; 
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; 
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
 /* Полоса прокрутки браузера */
@@ -30,14 +30,14 @@ body::-webkit-scrollbar-track {
 }
 
 body::-webkit-scrollbar-thumb {
-  background-color: #cccccc; 
-  border-radius: 4px; 
-  border: 2px solid transparent; 
+  background-color: #cccccc;
+  border-radius: 4px;
+  border: 2px solid transparent;
   background-clip: content-box;
 }
 
 body::-webkit-scrollbar-thumb:hover {
-  background-color: #bbbbbb; 
+  background-color: #bbbbbb;
   background-clip: content-box;
 }
 
@@ -46,8 +46,8 @@ body::-webkit-scrollbar-thumb:hover {
   position: relative;
   display: flex;
   flex-direction: column;
-  min-height: 100vh; 
-  min-height: 100dvh; 
+  min-height: 100vh;
+  min-height: 100dvh;
   max-width: 768px;
   margin: 0 auto;
   background-color: var(--bg-color);
@@ -59,7 +59,7 @@ body::-webkit-scrollbar-thumb:hover {
   justify-content: center;
 }
 
-/* Кнопка Войти (с иконкой и текстом) */
+/* Кнопка Войти */
 .login-btn {
   position: fixed;
   top: 15px;
@@ -68,13 +68,12 @@ body::-webkit-scrollbar-thumb:hover {
   background-color: #333333;
   color: #ffffff;
   border: none;
-  /* Убрали фиксированные width/height, добавили padding */
   padding: 8px 16px;
-  border-radius: 20px; /* Форма "таблетки" (pill) */
+  border-radius: 20px;
   display: flex;
   justify-content: center;
   align-items: center;
-  gap: 8px; /* Расстояние между иконкой и текстом */
+  gap: 8px;
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
@@ -85,31 +84,33 @@ body::-webkit-scrollbar-thumb:hover {
 
 /* Диалоговое окно */
 .chat-container {
-  padding: 70px 1rem 120px 1rem; 
+  padding: 70px 1rem 80px 1rem; /* Уменьшили нижний отступ с 120px до 80px */
   display: flex;
   flex-direction: column;
   width: 100%;
 }
 
-/* Обертка сообщения (теперь колонка, чтобы элементы были друг под другом) */
+/* Обертка сообщения */
 .message-wrapper {
   display: flex;
   flex-direction: column;
   margin-bottom: 1.5rem;
   width: 100%;
 }
-.message-wrapper.user { align-items: flex-end; } /* Прижимаем к правому краю */
-.message-wrapper.assistant { align-items: flex-start; } /* Прижимаем к левому краю */
+.message-wrapper.user { align-items: flex-end; }
+.message-wrapper.assistant { align-items: flex-start; }
 
+/* Сообщения */
 .message.user {
   max-width: 85%;
-  padding: 1.2rem 1.5rem; 
+  padding: 1.2rem 1.5rem;
   background-color: var(--user-bubble);
   color: var(--text-color);
-  border-radius: 22px; 
+  border-radius: 22px;
   border-bottom-right-radius: 6px;
   word-wrap: break-word;
-  white-space: pre-wrap; 
+  white-space: pre-wrap;
+  line-height: 1.5;
   box-shadow: 0 1px 2px rgba(0,0,0,0.05);
 }
 
@@ -117,7 +118,7 @@ body::-webkit-scrollbar-thumb:hover {
   max-width: 100%;
   color: var(--text-color);
   word-wrap: break-word;
-  white-space: pre-wrap; 
+  white-space: pre-wrap;
   line-height: 1.6;
 }
 
@@ -132,59 +133,52 @@ body::-webkit-scrollbar-thumb:hover {
   display: flex;
   gap: 10px;
   padding: 1rem;
-  /* Сделали фон прозрачным */
-  background-color: transparent; 
+  background-color: transparent;
   width: 100%;
   z-index: 20;
   align-items: flex-end;
 }
 
-.empty-state-app .input-area {
-  position: relative;
-}
+.empty-state-app .input-area { position: relative; }
 
-/* Фиксированная область ввода внизу */
 .chat-active-app .input-area {
   position: fixed;
   bottom: 0;
   left: 50%;
   transform: translateX(-50%);
   max-width: 768px;
-  /* Убрали тень, так как фон прозрачный */
-  box-shadow: none; 
+  box-shadow: none;
 }
 
 .input-area textarea {
   flex: 1;
   padding: 0.85rem 1.25rem;
   border: 1px solid var(--border-color);
-  border-radius: 24px; 
+  border-radius: 24px;
   resize: none;
   outline: none;
   max-height: 120px;
   font-size: 1rem;
   font-family: inherit;
   line-height: 1.4;
-  min-height: 48px; 
-  /* Фон самого поля ввода оставляем белым, чтобы текст был читаем */ 
-  background-color: var(--bg-color); 
+  min-height: 48px;
+  background-color: var(--bg-color);
 }
 
-/* Стили для круглых кнопок */
 .input-area .action-btn,
 .input-area .send-btn {
   display: flex;
   justify-content: center;
   align-items: center;
   width: 48px;
-  height: 48px; 
+  height: 48px;
   min-width: 48px;
   padding: 0;
   border: none;
-  border-radius: 50%; 
+  border-radius: 50%;
   cursor: pointer;
   transition: background 0.2s, transform 0.1s;
-  flex-shrink: 0; 
+  flex-shrink: 0;
 }
 
 .input-area .action-btn {
@@ -204,15 +198,13 @@ body::-webkit-scrollbar-thumb:hover {
   transform: scale(0.95);
 }
 
-.input-area .send-btn:disabled { 
-  background-color: #b0d4ff; 
-  cursor: not-allowed; 
+.input-area .send-btn:disabled {
+  background-color: #b0d4ff;
+  cursor: not-allowed;
   transform: none;
 }
 
-
-
-/* Стили для сообщения об ошибке */
+/* Сообщение об ошибке */
 .message.error-message {
   background-color: #fff0f0;
   color: #d32f2f;
@@ -225,7 +217,6 @@ body::-webkit-scrollbar-thumb:hover {
   padding: 1rem 1.25rem;
 }
 
-/* Стили для кнопки повтора */
 .retry-btn {
   background-color: #d32f2f;
   color: white;
@@ -238,17 +229,10 @@ body::-webkit-scrollbar-thumb:hover {
   transition: background-color 0.2s;
 }
 
-.retry-btn:hover {
-  background-color: #b71c1c;
-}
+.retry-btn:hover { background-color: #b71c1c; }
+.retry-btn:disabled { background-color: #ef9a9a; cursor: not-allowed; }
 
-.retry-btn:disabled {
-  background-color: #ef9a9a;
-  cursor: not-allowed;
-}
-
-
-/* Тег исходного языка (ВНЕ пузыря сообщения) */
+/* Тег исходного языка */
 .source-language-tag {
   font-size: 0.7rem;
   color: #999;
@@ -260,57 +244,36 @@ body::-webkit-scrollbar-thumb:hover {
   padding: 0 4px;
 }
 
-/* Стили для пустого экрана (приветственное сообщение) */
+/* Пустой экран */
 .empty-state {
   text-align: center;
-  color: #999; 
-  margin: 0 auto 2rem; /* auto слева и справа центрирует блок по горизонтали */
-  padding: 0 1.5rem; 
+  color: #999;
+  margin: 0 auto 2rem;
+  padding: 0 1.5rem;
   font-size: 1rem;
   line-height: 1.5;
   max-width: 400px;
 }
 
-/* Обертка сообщения (теперь колонка, чтобы элементы были друг под другом) */
-.message-wrapper {
-  display: flex;
-  flex-direction: column;
-  margin-bottom: 1.5rem;
-  width: 100%;
-}
-.message-wrapper.user { align-items: flex-end; } /* Прижимаем к правому краю */
-.message-wrapper.assistant { align-items: flex-start; } /* Прижимаем к левому краю */
-
-/* Тег исходного языка (ВНЕ пузыря сообщения) */
-.source-language-tag {
-  font-size: 0.7rem;
-  color: #999;
-  margin-top: 6px;
-  text-align: right;
-  font-weight: normal;
-  text-transform: lowercase;
-  opacity: 0.8;
-  padding: 0 4px;
-}
-
-/* Кнопка Мини-урок (ВНЕ пузыря сообщения) */
+/* Кнопка Мини-урок */
 .lesson-btn {
   background-color: transparent;
-  color: #666;
-  border: 1px solid #ddd;
-  padding: 4px 10px;
-  border-radius: 12px;
-  font-size: 0.75rem;
-  font-weight: 500;
+  color: #555;
+  border: 1px solid #ccc;
+  padding: 8px 16px;
+  border-radius: 16px;
+  font-size: 0.9rem;
+  font-weight: 600;
   cursor: pointer;
-  margin-top: 8px;
+  margin-top: 10px;
   transition: all 0.2s;
-  align-self: flex-start; /* Чтобы кнопка была под сообщением слева */
+  align-self: flex-start;
 }
 
 .lesson-btn:hover {
   background-color: #f1f1f1;
   color: #333;
+  border-color: #bbb;
 }
 
 .lesson-btn:disabled {
@@ -320,7 +283,7 @@ body::-webkit-scrollbar-thumb:hover {
 
 /* Сообщение с уроком */
 .message.lesson-message {
-  background-color: #f0f7ff; 
+  background-color: #f0f7ff;
   border: 1px solid #d0e3ff;
   color: #1d1d1f;
   border-radius: 18px;
@@ -328,116 +291,115 @@ body::-webkit-scrollbar-thumb:hover {
   padding: 1rem 1.25rem;
 }
 
-/* Заглушка загрузки урока */
 .message.lesson-loading {
   background-color: #f0f7ff;
   border: 1px solid #d0e3ff;
 }
 
-/* Затемняющий фон */
-.modal-overlay {
-  position: fixed;
-  top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(0,0,0,0.6);
-  z-index: 200;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-}
+/* ========================================= */
+/* ===== КАРТОЧКА ПРОВЕРКИ УРОВНЯ ========== */
+/* ========================================= */
 
-/* Окно */
-.modal-box {
-  background: white;
-  border-radius: 20px;
-  width: 90%;
-  max-width: 500px;
-  height: 70vh;
+.message.assessment-card {
   display: flex;
   flex-direction: column;
+  width: 100%;
+  /* Высчитываем точную высоту: вся высота экрана минус 250px (поле ввода + отступы) */
+  height: calc(100dvh - 250px);
+  min-height: 280px;
+  background-color: #f0f7ff;
+  border: 1px solid #d0e3ff;
+  border-radius: 18px;
   padding: 20px;
-  position: relative;
-  box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+  box-sizing: border-box;
 }
 
-.modal-box h3 {
-  margin-bottom: 15px;
-  text-align: center;
+/* Обертка текста и ползунка */
+.assessment-content-wrapper {
+  flex: 1; /* Занимает всё доступное место над кнопкой */
+  display: flex;
+  align-items: stretch;
+  overflow: hidden;
+  min-height: 0;
 }
 
 /* Зона с текстом */
-.modal-content {
+.assessment-text-area {
   flex: 1;
   overflow-y: auto;
-  font-size: 1rem;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  padding-right: 50px; /* Место для ползунка */
+  padding-right: 40px;
+  font-size: 1.1rem;
+  line-height: 2.2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   color: #333;
 }
 
-.beginner-text {
+.assessment-text-area .beginner-text {
   text-align: center;
   font-weight: bold;
-  margin-top: 40%;
   color: #666;
-  font-size: 1.1rem;
 }
 
-/* Вертикальный ползунок справа */
-.level-slider-container {
-  position: absolute;
-  top: 60px;
-  right: 20px;
-  bottom: 80px;
+/* Вертикальный ползунок */
+.assessment-slider {
+  width: 24px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
   align-items: center;
+  padding: 10px 0;
 }
 
-.level-item {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  color: #999;
-  transition: all 0.2s;
-}
-
-.level-item.active {
-  color: #007aff;
-  font-weight: bold;
-}
-
-.level-item .level-dot {
+.slider-dot {
   width: 12px;
   height: 12px;
   border-radius: 50%;
-  background: #ddd;
+  background-color: #c4dafc;
+  cursor: pointer;
   transition: all 0.2s;
+  flex-shrink: 0;
 }
 
-.level-item.active .level-dot {
-  background: #007aff;
-  transform: scale(1.4);
-  box-shadow: 0 0 5px rgba(0, 122, 255, 0.5);
+.slider-dot:hover { background-color: #a0c4fd; }
+
+.slider-dot.active {
+  background-color: #007aff;
+  transform: scale(1.6);
+  box-shadow: 0 0 8px rgba(0, 122, 255, 0.4);
 }
 
-/* Кнопка сохранения */
-.modal-save-btn {
-  margin-top: 15px;
+/* Нижний блок с кнопкой (БЕЗ абсолютного позиционирования) */
+.assessment-footer {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 15px;
+  padding-top: 15px;
+  margin-top: 10px;
+  border-top: 1px solid #d0e3ff;
+  flex-shrink: 0; /* Запрещаем сжатие кнопки */
+}
+
+.assessment-prompt-text {
+  font-size: 0.9rem;
+  color: #555;
+  font-weight: 500;
+  text-align: right;
+}
+
+.confirm-level-btn {
   background-color: #007aff;
   color: white;
   border: none;
-  padding: 12px 20px;
+  padding: 10px 20px;
   border-radius: 12px;
-  font-size: 1rem;
+  font-size: 0.9rem;
   font-weight: 600;
   cursor: pointer;
   transition: background 0.2s;
+  white-space: nowrap;
 }
 
-.modal-save-btn:hover {
-  background-color: #005ecb;
-}
+.confirm-level-btn:hover { background-color: #005ecb; }

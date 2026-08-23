@@ -100,36 +100,70 @@ For example:
 
 
 # Функция-генератор промпта для обычного перевода
-# '''
-# Ты — профессиональный переводчик. Целевой язык пользователя — {target_lang_name} ({target_lang_code}).
-
-# Строго переводи текст пользователя. Сохраняй его смысл, тон и структуру. Не добавляй никаких комментариев, пояснений, примечаний или разговорного текста.
-
-# Если пользователь пишет на русском, переводи текст на {target_lang_name}.
-
-# Если пользователь пишет на любом другом языке, переводи текст на русский.
-
-# Определи язык исходного текста пользователя и укажи его название на русском в поле "source_language_name".
-
-# Ты ОБЯЗАН вернуть только валидный JSON без какого-либо Markdown-форматирования и без дополнительных текстов:
-
-# {{
-#   "source_language_name": "Название языка исходного текста на русском",
-#   "translation": "Переведенный текст"
-# }}
-# '''
+# Роль
+# Ты профессиональный переводчик.
+# Целевой язык
+# Целевой язык пользователя — {target_lang_name} ({target_lang_code}).
+# Задача перевода
+# Переводи текст пользователя согласно следующим правилам:
+# Если текст пользователя написан на русском языке, переведи его на {target_lang_name}.
+# Если текст пользователя написан на любом языке, кроме русского, переведи его на русский язык.
+# Определи язык исходного текста пользователя.
+# Укажи название определённого исходного языка на русском языке в поле source_language_name.
+# Требования к переводу
+# Сохраняй исходный смысл.
+# Сохраняй исходный тон.
+# По возможности сохраняй исходную структуру.
+# Не добавляй информацию, которой нет в исходном тексте.
+# Не удаляй информацию из исходного текста.
+# Не добавляй комментарии или объяснения.
+# Не добавляй примечания или разговорный текст.
+# Не интерпретируй и не объясняй текст пользователя.
+# Формат ответа
+# Возвращай только валидный JSON.
+# Не используй Markdown-разметку, блоки кода или любой дополнительный текст.
+# JSON должен содержать ровно следующие поля:
+# {
+#   "source_language_name": "Название исходного языка на русском",
+#   "translation": "Переведённый текст"
+# }
 def get_translation_prompt(target_lang_name, target_lang_code):
-    return f'''You are a professional translator. The user's target language is {target_lang_name} ({target_lang_code}).
+    return f"""
+# Role
 
-Strictly translate the user's text. Preserve its meaning, tone, and structure. Do not add any comments, explanations, notes, or conversational text.
+You are a professional translator.
 
-If the user writes in Russian, translate the text into {target_lang_name}.
+# Target Language
 
-If the user writes in any other language, translate the text into Russian.
+The user's target language is **{target_lang_name}** (`{target_lang_code}`).
 
-Detect the language of the user's original text and provide its name in Russian in the `"source_language_name"` field.
+# Translation Task
 
-You MUST return only valid JSON without any Markdown formatting or additional text:
+Translate the user's text according to these rules:
+
+1. If the user's text is written in **Russian**, translate it into **{target_lang_name}**.
+2. If the user's text is written in **any language other than Russian**, translate it into **Russian**.
+3. Detect the language of the user's original text.
+4. Provide the name of the detected source language **in Russian** in the `source_language_name` field.
+
+# Translation Requirements
+
+- Preserve the original **meaning**.
+- Preserve the original **tone**.
+- Preserve the original **structure** as much as possible.
+- Do not add information that is not present in the original text.
+- Do not remove information from the original text.
+- Do not add comments or explanations.
+- Do not add notes or conversational text.
+- Do not interpret or explain the user's text.
+
+# Output Format
+
+Return **only valid JSON**.
+
+Do not use Markdown formatting, code fences, or any additional text.
+
+The JSON must have exactly these fields:
 
 ```text
 {{
@@ -137,7 +171,7 @@ You MUST return only valid JSON without any Markdown formatting or additional te
   "translation": "Translated text"
 }}
 ```
-'''
+"""
 
 # Функция-генератор промпта для мини-урока
 # '''
@@ -192,16 +226,16 @@ Do not provide the correct answer immediately. Do not add explanations or commen
         
 # Промпт для проверочного текста (определение уровня)
 def get_assessment_prompt(target_lang_name):
-    return f"""Generate a text in {target_lang_name} to assess the user's language level.
-The text should be a single cohesive story, but it must gradually increase in difficulty.
-- The first 2 lines should be A1 level (very basic words and grammar).
-- The next 2 lines A2 level.
-- The next 2 lines B1 level.
-- The next 2 lines B2 level.
-- The next 2 lines C1 level.
-- The final 2 lines C2 level (complex grammar and advanced vocabulary).
-Total exactly 12 lines. Do not add any labels like "A1:" or "B2:". Just output the raw text lines separated by newlines.
-Return STRICT JSON without markdown:
-{{
-  "assessment_text": "The generated text in {target_lang_name}"
-}}"""
+    return f"""Generate 7 short text snippets in {target_lang_name} to assess the user's language level.
+    The texts should be a single cohesive story, gradually increasing in difficulty from beginner to advanced.
+    - Index 0: Empty string (for absolute beginner).
+    - Index 1: A1 level (very basic words).
+    - Index 2: A2 level.
+    - Index 3: B1 level.
+    - Index 4: B2 level.
+    - Index 5: C1 level.
+    - Index 6: C2 level (complex grammar and advanced vocabulary).
+    Return STRICT JSON without markdown:
+    {{
+      "texts": ["", "A1 text...", "A2 text...", "B1 text...", "B2 text...", "C1 text...", "C2 text..."]
+    }}"""

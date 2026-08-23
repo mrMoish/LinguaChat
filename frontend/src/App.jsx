@@ -8,20 +8,17 @@ function App() {
   const [isInitializing, setIsInitializing] = useState(true);
   const [sessionId, setSessionId] = useState(null);
   const chatContainerRef = useRef(null);
-  const [showLevelModal, setShowLevelModal] = useState(false);
-  const [assessmentText, setAssessmentText] = useState('');
-  const [selectedLevel, setSelectedLevel] = useState('A1');
 
   useEffect(() => {
     const initChat = async () => {
       let currentSessionId = localStorage.getItem('translator_session_id');
-      
+
       if (currentSessionId) {
         const savedHistory = localStorage.getItem('translator_chat_history');
         if (savedHistory) {
-          try { 
+          try {
             const parsed = JSON.parse(savedHistory);
-            setMessages(parsed.filter(m => !m.isError)); 
+            setMessages(parsed.filter(m => !m.isError && !m.isAssessment));
           } catch (e) {}
         }
       }
@@ -36,10 +33,15 @@ function App() {
           const data = await response.json();
           localStorage.setItem('translator_session_id', data.session_id);
           setSessionId(data.session_id);
-          
+
           if (data.history && data.history.length > 0) {
-            setMessages(data.history);
-            localStorage.setItem('translator_chat_history', JSON.stringify(data.history));
+            // Помечаем сообщения флагом hideLesson, если язык не выбран
+            const mappedHistory = data.history.map(m => ({
+              ...m,
+              hideLesson: !data.target_language_code
+            }));
+            setMessages(mappedHistory);
+            localStorage.setItem('translator_chat_history', JSON.stringify(mappedHistory));
           }
         }
       } catch (error) {
@@ -53,9 +55,9 @@ function App() {
 
   useEffect(() => {
     if (messages.length > 0) {
-      const cleanMessages = messages.filter(m => !m.isError);
+      const cleanMessages = messages.filter(m => !m.isError && !m.isAssessment);
       localStorage.setItem('translator_chat_history', JSON.stringify(cleanMessages));
-      
+
       const timer = setTimeout(() => {
         window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
       }, 100);
@@ -66,7 +68,7 @@ function App() {
   const sendRequest = async (text, messagesState) => {
     setIsLoading(true);
     try {
-      const backendUrl = import.meta.env.VITE_BACKEND_URL || ''; 
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
       const headers = { 'Content-Type': 'application/json' };
       if (sessionId) headers['X-Session-Id'] = sessionId;
 
@@ -77,7 +79,7 @@ function App() {
       });
 
       if (!response.ok) throw new Error('Network response was not ok');
-      
+
       const data = await response.json();
       if (data.session_id) {
         localStorage.setItem('translator_session_id', data.session_id);
@@ -85,7 +87,6 @@ function App() {
       }
 
       const finalMessages = [...messagesState];
-      // Обновляем последнее сообщение пользователя, добавляя исходный язык
       const lastIdx = finalMessages.length - 1;
       if (lastIdx >= 0 && finalMessages[lastIdx].role === 'user') {
         finalMessages[lastIdx] = {
@@ -94,11 +95,15 @@ function App() {
         };
       }
 
-      const aiMessage = { role: 'assistant', content: data.reply };
+      const aiMessage = {
+        role: 'assistant',
+        content: data.reply,
+        hideLesson: !data.target_language_code // Скрываем урок, если язык не выбран
+      };
       finalMessages.push(aiMessage);
-      
+
       setMessages(finalMessages);
-      localStorage.setItem('translator_chat_history', JSON.stringify(finalMessages));
+      localStorage.setItem('translator_chat_history', JSON.stringify(finalMessages.filter(m => !m.isError && !m.isAssessment)));
     } catch (error) {
       console.error('Error:', error);
       const errorMessage = {
@@ -117,7 +122,7 @@ function App() {
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
 
-    const cleanMessages = messages.filter(m => !m.isError);
+    const cleanMessages = messages.filter(m => !m.isError && !m.isAssessment);
     const userMessage = { role: 'user', content: input, source_language: null };
     const newMessages = [...cleanMessages, userMessage];
     setMessages(newMessages);
@@ -130,7 +135,7 @@ function App() {
 
   const handleRetry = async (errorIndex) => {
     if (isLoading) return;
-    
+
     const errorMsgObj = messages[errorIndex];
     if (!errorMsgObj.isError) return;
 
@@ -165,16 +170,19 @@ function App() {
       const data = await response.json();
 
       if (data.action === 'assess') {
-        // Если бэкенд вернул проверочный текст
-        setAssessmentText(data.text);
-        setSelectedLevel('A1'); // По умолчанию A1
-        setShowLevelModal(true);
+        const finalMessages = [...messages];
+        finalMessages.push({
+          role: 'assistant',
+          isAssessment: true,
+          texts: data.texts,
+          currentLevelIndex: 1
+        });
+        setMessages(finalMessages);
       } else {
-        // Если бэкенд вернул обычный урок
         const finalMessages = [...messages];
         finalMessages.push({ role: 'assistant', content: data.lesson, isLesson: true });
         setMessages(finalMessages);
-        localStorage.setItem('translator_chat_history', JSON.stringify(finalMessages.filter(m => !m.isError)));
+        localStorage.setItem('translator_chat_history', JSON.stringify(finalMessages.filter(m => !m.isError && !m.isAssessment)));
       }
     } catch (error) {
       console.error('Error:', error);
@@ -183,7 +191,29 @@ function App() {
     }
   };
 
-  const handleSaveLevel = async () => {
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      // Добавляем проверку: если не isLoading, то отправляем
+      if (!isLoading) {
+        handleSend();
+      }
+    }
+  };
+
+  const handleSliderChange = (msgIdx, levelIdx) => {
+    const newMessages = [...messages];
+    newMessages[msgIdx].currentLevelIndex = levelIdx;
+    setMessages(newMessages);
+  };
+
+  const confirmLevel = async (msgIdx) => {
+    const assessmentMsg = messages[msgIdx];
+    const levelMap = ["0", "A1", "A2", "B1", "B2", "C1", "C2"];
+    const selectedLevelStr = levelMap[assessmentMsg.currentLevelIndex];
+    const selectedText = assessmentMsg.texts[assessmentMsg.currentLevelIndex];
+
+    setIsLoading(true);
     try {
       const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
       const headers = { 'Content-Type': 'application/json' };
@@ -192,24 +222,27 @@ function App() {
       await fetch(`${backendUrl}/api/set_level`, {
         method: 'POST',
         headers: headers,
-        body: JSON.stringify({ level: selectedLevel })
+        body: JSON.stringify({ level: selectedLevelStr })
       });
-      setShowLevelModal(false);
+
+      const newMessages = [...messages];
+      newMessages[msgIdx] = {
+        role: 'assistant',
+        content: `Переведите:\n\n${selectedText}`,
+        isLesson: true
+      };
+      setMessages(newMessages);
+      localStorage.setItem('translator_chat_history', JSON.stringify(newMessages.filter(m => !m.isError && !m.isAssessment)));
     } catch (error) {
       console.error('Error saving level:', error);
-    }
-  };
-
-  const handleKeyDown = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) { 
-      e.preventDefault(); 
-      handleSend(); 
+    } finally {
+      setIsLoading(false);
     }
   };
 
   return (
     <div className={`app-container ${messages.length === 0 ? 'empty-state-app' : 'chat-active-app'}`}>
-      
+
       <button className="login-btn" aria-label="Войти">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
@@ -220,52 +253,78 @@ function App() {
 
       {messages.length > 0 ? (
         <div className="chat-container" ref={chatContainerRef}>
-            {messages.map((msg, idx) => {
-            // Проверяем, последнее ли это сообщение в массиве
+          {messages.map((msg, idx) => {
             const isLastMessage = idx === messages.length - 1;
-            
+
+            if (msg.isAssessment) {
+              return (
+                <div key={idx} className="message-wrapper assistant">
+                  <div className="message assessment-card">
+
+                    {/* Обернули текст и ползунок */}
+                    <div className="assessment-content-wrapper">
+                      <div className="assessment-text-area">
+                        {msg.currentLevelIndex === 0 ? (
+                          <p className="beginner-text">Я только начал учить целевой язык</p>
+                        ) : (
+                          <div style={{ whiteSpace: 'pre-wrap' }}>
+                            {msg.texts[msg.currentLevelIndex]}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="assessment-slider">
+                        {[6, 5, 4, 3, 2, 1, 0].map((levelIdx) => (
+                          <div
+                            key={levelIdx}
+                            className={`slider-dot ${msg.currentLevelIndex === levelIdx ? 'active' : ''}`}
+                            onClick={() => handleSliderChange(idx, levelIdx)}
+                          ></div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Нижний блок с кнопкой */}
+                    <div className="assessment-footer">
+                      <span className="assessment-prompt-text">Выберите свой уровень языка</span>
+                      <button
+                        className="confirm-level-btn"
+                        onClick={() => confirmLevel(idx)}
+                        disabled={isLoading}
+                      >
+                        Это мой уровень
+                      </button>
+                    </div>
+
+                  </div>
+                </div>
+              );
+            }
             return (
               <div key={idx} className={`message-wrapper ${msg.role}`}>
-                
-                {/* Само сообщение (пузырь) */}
                 <div className={`message ${msg.role} ${msg.isError ? 'error-message' : ''} ${msg.isLesson ? 'lesson-message' : ''}`}>
-                  <div style={{ whiteSpace: 'pre-wrap' }}>
-                    {msg.content}
-                  </div>
-                  
+                  <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+
                   {msg.isError && (
-                    <button 
-                      className="retry-btn" 
-                      onClick={() => handleRetry(idx)}
-                      disabled={isLoading}
-                    >
+                    <button className="retry-btn" onClick={() => handleRetry(idx)} disabled={isLoading}>
                       Попробовать снова
                     </button>
                   )}
                 </div>
 
-                {/* Исходный язык ВНЕ сообщения, но ВНУТРИ обертки (под сообщением пользователя) */}
                 {msg.role === 'user' && msg.source_language && (
-                  <div className="source-language-tag">
-                    {msg.source_language}
-                  </div>
+                  <div className="source-language-tag">{msg.source_language}</div>
                 )}
 
-                {/* Кнопка Мини-урок ВНЕ сообщения, только для последнего ответа ИИ */}
-                {msg.role === 'assistant' && !msg.isError && !msg.isLesson && isLastMessage && !isLoading && (
-                  <button 
-                    className="lesson-btn" 
-                    onClick={() => generateLesson(idx)}
-                    disabled={isLoading}
-                  >
+                {msg.role === 'assistant' && !msg.isError && !msg.isLesson && !msg.hideLesson && isLastMessage && !isLoading && (
+                  <button className="lesson-btn" onClick={() => generateLesson(idx)} disabled={isLoading}>
                     🎓 Мини-урок
                   </button>
                 )}
-
               </div>
             );
           })}
-          
+
           {isLoading && (
             <div className="message-wrapper assistant">
               <div className="message assistant typing">
@@ -295,7 +354,6 @@ function App() {
           onKeyDown={handleKeyDown}
           placeholder="Введите текст..."
           rows={1}
-          disabled={isLoading}
         />
 
         <button className="action-btn" aria-label="Голосовой ввод">
@@ -307,9 +365,9 @@ function App() {
           </svg>
         </button>
 
-        <button 
-          onClick={handleSend} 
-          disabled={!input.trim() || isLoading} 
+        <button
+          onClick={handleSend}
+          disabled={!input.trim() || isLoading}
           className="send-btn"
           aria-label="Отправить"
         >
@@ -319,37 +377,6 @@ function App() {
           </svg>
         </button>
       </div>
-      {/* Модальное окно определения уровня */}
-      {showLevelModal && (
-        <div className="modal-overlay" onClick={() => setShowLevelModal(false)}>
-          <div className="modal-box" onClick={e => e.stopPropagation()}>
-            <h3>Определите свой уровень</h3>
-            <div className="modal-content">
-              {selectedLevel === '0' ? (
-                <p className="beginner-text">Я только начал учить целевой язык</p>
-              ) : (
-                <div className="assessment-text">{assessmentText}</div>
-              )}
-            </div>
-
-            {/* Вертикальный ползунок */}
-            <div className="level-slider-container">
-              {["C2", "C1", "B2", "B1", "A2", "A1", "0"].map(lvl => (
-                <div
-                  key={lvl}
-                  className={`level-item ${selectedLevel === lvl ? 'active' : ''}`}
-                  onClick={() => setSelectedLevel(lvl)}
-                >
-                  <span className="level-label">{lvl}</span>
-                  <span className="level-dot"></span>
-                </div>
-              ))}
-            </div>
-
-            <button className="modal-save-btn" onClick={handleSaveLevel}>Сохранить</button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
