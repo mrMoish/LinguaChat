@@ -314,6 +314,8 @@ body::-webkit-scrollbar-thumb:hover {
   color: #333;
 }
 
+
+
 .message.lesson-loading {
   background-color: #f0f7ff;
   border: 1px solid #d0e3ff;
@@ -425,3 +427,14 @@ body::-webkit-scrollbar-thumb:hover {
 }
 
 .confirm-level-btn:hover { background-color: #005ecb; }
+
+/* Сообщение с оценкой за урок */
+.message.evaluation-message {
+  background-color: #f0fff4; /* Очень светло-зеленый */
+  border: 1px solid #c6f6d5;
+  color: #1d1d1f;
+  border-radius: 18px;
+  border-bottom-left-radius: 6px;
+  padding: 1rem 1.25rem;
+  line-height: 1.6;
+}

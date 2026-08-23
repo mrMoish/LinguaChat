@@ -7,7 +7,7 @@ from pydantic import BaseModel
 import httpx
 import asyncpg
 from dotenv import load_dotenv
-from prompts import SETUP_SYSTEM_PROMPT, get_translation_prompt, get_lesson_prompt, get_assessment_prompt, get_single_word_prompt
+from prompts import SETUP_SYSTEM_PROMPT, get_translation_prompt, get_lesson_prompt, get_assessment_prompt, get_single_word_prompt, get_lesson_evaluation_prompt, get_lesson_from_history_prompt
 import random
 
 load_dotenv()
@@ -66,7 +66,18 @@ async def startup():
                 await conn.execute("ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS source_language VARCHAR(50)")
                 await conn.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS proficiency_level INTEGER")
                 await conn.execute("ALTER TABLE user_settings ALTER COLUMN proficiency_level DROP NOT NULL")
-                await conn.execute("UPDATE user_settings SET proficiency_level = NULL WHERE proficiency_level = 0")
+                await conn.execute("ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS is_evaluation BOOLEAN DEFAULT FALSE")
+
+
+                # НОВАЯ ТАБЛИЦА ДЛЯ ЛОГОВ УРОКОВ
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS lesson_logs (
+                        id SERIAL PRIMARY KEY,
+                        session_id UUID NOT NULL,
+                        content TEXT NOT NULL,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
         except Exception as e:
             print(f"DB Error: {e}")
     else:
@@ -83,6 +94,7 @@ class ChatRequest(BaseModel):
 class LessonRequest(BaseModel):
     user_text: str
     ai_text: str
+    use_history: bool = False
 
 def get_session_id(req: Request):
     session_id_str = req.headers.get("X-Session-Id")
@@ -105,6 +117,23 @@ async def get_history(req: Request):
             if row_settings:
                 target_lang_code = row_settings["target_language_code"]
 
+            # 1. Проверяем последнее сообщение в истории
+            last_row = await conn.fetchrow(
+                "SELECT id, is_lesson, content FROM chat_history WHERE session_id = $1 ORDER BY created_at DESC LIMIT 1",
+                session_id
+            )
+
+            # Если последнее сообщение — это урок, значит пользователь на него не ответил (урок "висит").
+            # Удаляем его из чата, чтобы он пропал при обновлении страницы.
+            if last_row and last_row["is_lesson"]:
+                await conn.execute("DELETE FROM chat_history WHERE id = $1", last_row["id"])
+                # СОХРАНЯЕМ В ЛОГИ УРОКОВ (для статистики)
+                await conn.execute(
+                    "INSERT INTO lesson_logs (session_id, content) VALUES ($1, $2)",
+                    session_id, last_row["content"]
+                )
+
+            # 2. Достаем очищенную историю
             rows = await conn.fetch(
                 "SELECT role, content, is_lesson, source_language FROM chat_history WHERE session_id = $1 ORDER BY created_at ASC",
                 session_id
@@ -113,10 +142,10 @@ async def get_history(req: Request):
                 "role": row["role"],
                 "content": row["content"],
                 "isLesson": row["is_lesson"],
+                "isEvaluation": row["is_evaluation"], # ДОБАВИЛИ
                 "source_language": row["source_language"]
             } for row in rows]
 
-            # Возвращаем историю и флаг выбранного языка
             return {"session_id": session_id_str, "history": history, "target_language_code": target_lang_code}
 
     return {"session_id": session_id_str, "history": [], "target_language_code": None}
@@ -263,7 +292,23 @@ async def mini_lesson(request: LessonRequest, req: Request):
 
     # --- РЕЖИМ 2: Обычный мини-урок ---
     question_or_phrase = [('Ответь', 'Question'),('Переведи', 'Phrase')][random.choice([0, 1])]
-    system_prompt = get_lesson_prompt(target_lang_name, proficiency_level, request.user_text, request.ai_text, question_or_phrase)
+    # НОВОЕ: Если пришел флаг use_history, берем историю из БД
+    if request.use_history and db_pool:
+        async with db_pool.acquire() as conn:
+            # Берем последние 12 сообщений ВКЛЮЧАЯ уроки и оценки
+            rows = await conn.fetch(
+                "SELECT role, content FROM chat_history WHERE session_id = $1 ORDER BY created_at DESC LIMIT 12",
+                session_id
+            )
+            # Формируем текст истории
+            history_log = "\n".join([f"{r['role']}: {r['content']}" for r in reversed(rows)])
+
+        system_prompt = get_lesson_from_history_prompt(target_lang_name, proficiency_level, history_log,
+                                                       question_or_phrase)
+    else:
+        system_prompt = get_lesson_prompt(target_lang_name, proficiency_level, request.user_text, request.ai_text,
+                                          question_or_phrase)
+
     payload = {
         "model": MODEL_NAME,
         "messages": [{"role": "system", "content": system_prompt}],
@@ -281,9 +326,11 @@ async def mini_lesson(request: LessonRequest, req: Request):
 
             if db_pool:
                 async with db_pool.acquire() as conn:
+                    # 1. Сохраняем урок в историю чата, чтобы пользователь его видел
                     await conn.execute(
                         "INSERT INTO chat_history (session_id, role, content, is_lesson) VALUES ($1, $2, $3, TRUE)",
-                        session_id, "assistant", lesson_text)
+                        session_id, "assistant", lesson_text
+                    )
                     new_level = min(100, proficiency_level + 5)
                     await conn.execute("UPDATE user_settings SET proficiency_level = $1 WHERE session_id = $2",
                                        new_level, session_id)
@@ -296,6 +343,59 @@ async def mini_lesson(request: LessonRequest, req: Request):
 class SetLevelRequest(BaseModel):
     level: str  # "0", "A1", "A2", "B1", "B2", "C1", "C2"
 
+
+class CheckLessonRequest(BaseModel):
+    lesson_text: str
+    user_answer: str
+
+
+@app.post("/api/check_lesson")
+async def check_lesson(request: CheckLessonRequest, req: Request):
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(status_code=500, detail="OpenRouter API Key not configured")
+
+    session_id_str = get_session_id(req)
+    session_id = uuid.UUID(session_id_str)
+
+    system_prompt = get_lesson_evaluation_prompt(request.lesson_text, request.user_answer)
+
+    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
+    payload = {
+        "model": MODEL_NAME,
+        "messages": [{"role": "system", "content": system_prompt}],
+        "response_format": {"type": "json_object"}
+    }
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload,
+                                         timeout=60.0)
+            response.raise_for_status()
+            data = response.json()
+            parsed = json.loads(data["choices"][0]["message"]["content"].strip())
+
+            grade = parsed.get("grade", "Ошибка")
+            explanation = parsed.get("explanation", "")
+            evaluation_text = f"{grade}\n\n{explanation}"
+
+        # Сохраняем ответ пользователя и оценку в историю чата
+        # Теперь последним сообщением станет оценка, поэтому "висящий" урок больше не удалится при перезагрузке
+        if db_pool:
+            async with db_pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO chat_history (session_id, role, content) VALUES ($1, $2, $3)",
+                    session_id, "user", request.user_answer
+                )
+                # Сохраняем оценку с флагом is_evaluation = TRUE
+                await conn.execute(
+                    "INSERT INTO chat_history (session_id, role, content, is_evaluation) VALUES ($1, $2, $3, TRUE)",
+                    session_id, "assistant", evaluation_text
+                )
+
+        return {"evaluation": evaluation_text}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/set_level")
 async def set_level(request: SetLevelRequest, req: Request):
@@ -313,7 +413,30 @@ async def set_level(request: SetLevelRequest, req: Request):
                                proficiency_level, session_id)
 
     return {"status": "ok"}
-        
+
+
+@app.post("/api/abandon_lesson")
+async def abandon_lesson(req: Request):
+    session_id_str = get_session_id(req)
+    session_id = uuid.UUID(session_id_str)
+
+    if db_pool:
+        async with db_pool.acquire() as conn:
+            # Находим последнее сообщение
+            last_row = await conn.fetchrow(
+                "SELECT id, is_lesson, content FROM chat_history WHERE session_id = $1 ORDER BY created_at DESC LIMIT 1",
+                session_id
+            )
+            # Если это урок, удаляем его из чата и сохраняем в логи
+            if last_row and last_row["is_lesson"]:
+                await conn.execute("DELETE FROM chat_history WHERE id = $1", last_row["id"])
+                await conn.execute(
+                    "INSERT INTO lesson_logs (session_id, content) VALUES ($1, $2)",
+                    session_id, last_row["content"]
+                )
+
+    return {"status": "ok"}
+
 @app.get("/")
 def read_root():
     return {"status": "Backend is running"}

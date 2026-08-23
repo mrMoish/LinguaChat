@@ -13,6 +13,7 @@ function App() {
     const initChat = async () => {
       let currentSessionId = localStorage.getItem('translator_session_id');
 
+      // 1. Сначала мгновенно загружаем из localStorage
       if (currentSessionId) {
         const savedHistory = localStorage.getItem('translator_chat_history');
         if (savedHistory) {
@@ -23,6 +24,7 @@ function App() {
         }
       }
 
+      // 2. Затем синхронизируемся с сервером
       try {
         const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
         const headers = {};
@@ -34,15 +36,15 @@ function App() {
           localStorage.setItem('translator_session_id', data.session_id);
           setSessionId(data.session_id);
 
-          if (data.history && data.history.length > 0) {
-            // Помечаем сообщения флагом hideLesson, если язык не выбран
-            const mappedHistory = data.history.map(m => ({
-              ...m,
-              hideLesson: !data.target_language_code
-            }));
-            setMessages(mappedHistory);
-            localStorage.setItem('translator_chat_history', JSON.stringify(mappedHistory));
-          }
+          // 3. Переписываем локальную историю данными с сервера
+          // (сервер уже удалил "висящий" урок и вернул флаги isLesson/isEvaluation)
+          const mappedHistory = data.history.map(m => ({
+            ...m,
+            hideLesson: !data.target_language_code
+          }));
+
+          setMessages(mappedHistory);
+          localStorage.setItem('translator_chat_history', JSON.stringify(mappedHistory));
         }
       } catch (error) {
         console.error('Ошибка загрузки истории:', error);
@@ -64,6 +66,39 @@ function App() {
       return () => clearTimeout(timer);
     }
   }, [messages, isLoading]);
+
+  // 3. ОБРАБОТКА ПЕРЕКЛЮЧЕНИЯ ВКЛАДОК
+  useEffect(() => {
+    const handleVisibilityChange = async () => {
+      // Если вкладка снова стала видимой
+      if (document.visibilityState === 'visible') {
+        // Проверяем, является ли последнее сообщение активным уроком
+        if (messages.length > 0 && messages[messages.length - 1].isLesson) {
+          try {
+            const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
+            const headers = {};
+            if (sessionId) headers['X-Session-Id'] = sessionId;
+
+            // Отправляем запрос на удаление урока и сохранение в логи
+            await fetch(`${backendUrl}/api/abandon_lesson`, {
+              method: 'POST',
+              headers: headers
+            });
+
+            // Удаляем урок из интерфейса и localStorage
+            const newMessages = messages.slice(0, -1);
+            setMessages(newMessages);
+            localStorage.setItem('translator_chat_history', JSON.stringify(newMessages));
+          } catch (error) {
+            console.error('Error abandoning lesson:', error);
+          }
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [messages, sessionId]);
 
   const sendRequest = async (text, messagesState) => {
     setIsLoading(true);
@@ -119,18 +154,63 @@ function App() {
     }
   };
 
+  // Проверка ответа на мини-урок
+  const checkLessonAnswer = async (answerText, lessonMsg, messagesState) => {
+    setIsLoading(true);
+    try {
+      // Сразу отображаем ответ пользователя в чате
+      const userMessage = { role: 'user', content: answerText };
+      const messagesWithAnswer = [...messagesState, userMessage];
+      setMessages(messagesWithAnswer);
+
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
+      const headers = { 'Content-Type': 'application/json' };
+      if (sessionId) headers['X-Session-Id'] = sessionId;
+
+      const response = await fetch(`${backendUrl}/api/check_lesson`, {
+        method: 'POST',
+        headers: headers,
+        body: JSON.stringify({ lesson_text: lessonMsg.content, user_answer: answerText })
+      });
+
+      if (!response.ok) throw new Error('Network response was not ok');
+
+      const data = await response.json();
+      const evaluationMessage = {
+        role: 'assistant',
+        content: data.evaluation,
+        isEvaluation: true // Помечаем, чтобы стилизовать
+      };
+
+      const finalMessages = [...messagesWithAnswer, evaluationMessage];
+      setMessages(finalMessages);
+      localStorage.setItem('translator_chat_history', JSON.stringify(finalMessages.filter(m => !m.isError && !m.isAssessment)));
+    } catch (error) {
+      console.error('Error checking lesson:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
 
     const cleanMessages = messages.filter(m => !m.isError && !m.isAssessment);
-    const userMessage = { role: 'user', content: input, source_language: null };
-    const newMessages = [...cleanMessages, userMessage];
-    setMessages(newMessages);
+    const lastMessage = cleanMessages[cleanMessages.length - 1];
 
     const currentInput = input;
     setInput('');
 
-    await sendRequest(currentInput, newMessages);
+    // Если последнее сообщение — это активный мини-урок, отправляем на проверку
+    if (lastMessage && lastMessage.isLesson) {
+      await checkLessonAnswer(currentInput, lastMessage, cleanMessages);
+    } else {
+      // Обычный перевод
+      const userMessage = { role: 'user', content: currentInput, source_language: null };
+      const newMessages = [...cleanMessages, userMessage];
+      setMessages(newMessages);
+      await sendRequest(currentInput, newMessages);
+    }
   };
 
   const handleRetry = async (errorIndex) => {
@@ -150,7 +230,10 @@ function App() {
 
     const userMsg = messages[idx - 1];
     const aiMsg = messages[idx];
-    if (!userMsg || userMsg.role !== 'user' || !aiMsg || aiMsg.role !== 'assistant') return;
+    if (!aiMsg || aiMsg.role !== 'assistant') return;
+
+    // Проверяем, является ли сообщение оценкой за урок
+    const useHistory = aiMsg.isEvaluation || false;
 
     setIsLoading(true);
 
@@ -162,7 +245,11 @@ function App() {
       const response = await fetch(`${backendUrl}/api/lesson`, {
         method: 'POST',
         headers: headers,
-        body: JSON.stringify({ user_text: userMsg.content, ai_text: aiMsg.content })
+        body: JSON.stringify({
+          user_text: userMsg?.content || "",
+          ai_text: aiMsg.content,
+          use_history: useHistory // Отправляем флаг!
+        })
       });
 
       if (!response.ok) throw new Error('Network response was not ok');
@@ -240,13 +327,24 @@ function App() {
     }
   };
 
-  // Удаление мини-урока
-  const dismissLesson = (msgIdx) => {
+  const dismissLesson = async (msgIdx) => {
     const newMessages = [...messages];
-    newMessages.splice(msgIdx, 1); // Удаляем сообщение по индексу
+    newMessages.splice(msgIdx, 1);
     setMessages(newMessages);
-    // Обновляем localStorage
     localStorage.setItem('translator_chat_history', JSON.stringify(newMessages.filter(m => !m.isError && !m.isAssessment)));
+
+    // Уведомляем бэкенд, чтобы он удалил урок из базы и сохранил в логи
+    try {
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
+      const headers = {};
+      if (sessionId) headers['X-Session-Id'] = sessionId;
+      await fetch(`${backendUrl}/api/abandon_lesson`, {
+        method: 'POST',
+        headers: headers
+      });
+    } catch (e) {
+      console.error('Error abandoning lesson on server:', e);
+    }
   };
 
   return (
