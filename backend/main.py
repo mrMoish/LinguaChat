@@ -623,6 +623,76 @@ async def audio_translate(file: UploadFile = File(...), req: Request = None):
         print(f"Audio Processing Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.post("/api/image_translate")
+async def image_translate(file: UploadFile = File(...), req: Request = None):
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(status_code=500, detail="OpenRouter API Key not configured")
+
+    session_id_str = get_session_id(req)
+    session_id = uuid.UUID(session_id_str)
+
+    # Получаем язык пользователя
+    target_lang_name = "Русский"
+    if db_pool:
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT target_language_name FROM user_settings WHERE session_id = $1", session_id)
+            if row:
+                target_lang_name = row["target_language_name"]
+
+    # 1. Читаем изображение и кодируем в Base64
+    contents = await file.read()
+    base64_image = base64.b64encode(contents).decode('utf-8')
+    mime_type = file.content_type or 'image/jpeg'
+    data_uri = f"data:{mime_type};base64,{base64_image}"
+
+    # 2. Формируем промпт для распознавания и перевода
+    prompt_text = f"""You are a professional OCR tool and translator. Extract all visible text from the image.
+    If the extracted text is in Russian, translate it to {target_lang_name}.
+    If the extracted text is in any other language, translate it to Russian.
+    Output strictly only the translated text without any comments, markdown, or quotes. If there is no text, reply with "На изображении нет текста"."""
+
+    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
+    payload = {
+        "model": AUDIO_MODEL_NAME, # Используем ту же модель (gemini-2.5-flash-lite), она отлично читает текст
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt_text},
+                    {"type": "image_url", "image_url": {"url": data_uri}}
+                ]
+            }
+        ]
+    }
+
+    try:
+        # 3. Отправляем запрос в OpenRouter
+        async with httpx.AsyncClient() as client:
+            response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=60.0)
+            response.raise_for_status()
+            data = response.json()
+            ai_reply = data["choices"][0]["message"]["content"].strip()
+
+        # 4. Сохраняем в историю чата
+        if db_pool:
+            async with db_pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO chat_history (session_id, role, content, source_language) VALUES ($1, $2, $3, $4)",
+                    session_id, "user", "📷 Фото для перевода", "image"
+                )
+                await conn.execute(
+                    "INSERT INTO chat_history (session_id, role, content) VALUES ($1, $2, $3)",
+                    session_id, "assistant", ai_reply
+                )
+
+        return {"reply": ai_reply, "source_language": "Фото"}
+
+    except Exception as e:
+        print(f"Image Processing Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/")
 def read_root():
     return {"status": "Backend is running"}

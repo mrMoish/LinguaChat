@@ -9,9 +9,9 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.ico'],
       manifest: {
-        name: 'My AI Chat',
-        short_name: 'AI Chat',
-        description: 'ChatGPT-like PWA prototype',
+        name: 'ИИ Переводчик',
+        short_name: 'Переводчик',
+        description: 'Переводчик и ассистент для изучения языков',
         theme_color: '#ffffff',
         background_color: '#ffffff',
         display: 'standalone',
@@ -32,7 +32,7 @@ export default defineConfig({
   ],
   server: {
     proxy: {
-      '/api': 'http://localhost:8000' // Для локальной разработки
+      '/api': 'http://localhost:8000'
     }
   }
 })
