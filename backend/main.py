@@ -387,31 +387,50 @@ async def check_lesson(request: CheckLessonRequest, req: Request):
                                          timeout=60.0)
             response.raise_for_status()
             data = response.json()
-            parsed = json.loads(data["choices"][0]["message"]["content"].strip())
+            raw_text = data["choices"][0]["message"]["content"].strip()
 
+            parsed = json.loads(raw_text)
             grade = parsed.get("grade", "Ошибка")
-            explanation = parsed.get("explanation", "")
-            evaluation_text = f"{grade}\n\n{explanation}"
+            explanation = parsed.get("explanation", "Нет пояснения.")
+            correct_answer = parsed.get("correct_answer", "")
 
-        # Сохраняем ответ пользователя и оценку в историю чата
-        # Теперь последним сообщением станет оценка, поэтому "висящий" урок больше не удалится при перезагрузке
+        # Формируем текст для сохранения в БД (как JSON строку)
+        eval_data = {
+            "grade": grade,
+            "explanation": explanation,
+            "correct_answer": correct_answer
+        }
+        eval_json_str = json.dumps(eval_data, ensure_ascii=False)
+
+        # Формируем текст для отображения в пузыре ИИ
+        if grade == "Не понятно":
+            ai_reply = f"Правильный ответ:\n\n{correct_answer}"
+        elif grade == "Идеально":
+            ai_reply = "Идеально! 🎉"
+        else:
+            ai_reply = grade
+
         if db_pool:
             async with db_pool.acquire() as conn:
                 await conn.execute(
                     "INSERT INTO chat_history (session_id, role, content) VALUES ($1, $2, $3)",
                     session_id, "user", request.user_answer
                 )
-                # Сохраняем оценку с флагом is_evaluation = TRUE
                 await conn.execute(
                     "INSERT INTO chat_history (session_id, role, content, is_evaluation) VALUES ($1, $2, $3, TRUE)",
-                    session_id, "assistant", evaluation_text
+                    session_id, "assistant", eval_json_str
                 )
 
-        return {"evaluation": evaluation_text}
+        return {
+            "grade": grade,
+            "explanation": explanation,
+            "correct_answer": correct_answer,
+            "ai_reply": ai_reply
+        }
 
     except Exception as e:
+        print(f"Check Lesson Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.post("/api/upload_pdf")
 async def upload_pdf(file: UploadFile = File(...), req: Request = None):
@@ -564,8 +583,8 @@ async def audio_translate(file: UploadFile = File(...), req: Request = None):
 
     # 2. Формируем промпт для перевода
     prompt_text = f"""You are a professional translator. Listen to the audio. 
+    Translate it to Russian.
     If the user speaks in Russian, translate it to {target_lang_name}.
-    If the user speaks in any other language, translate it to Russian.
     Output strictly only the translated text without any comments, markdown, or quotes."""
 
     headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
@@ -633,12 +652,12 @@ async def image_translate(file: UploadFile = File(...), req: Request = None):
     session_id = uuid.UUID(session_id_str)
 
     # Получаем язык пользователя
-    target_lang_name = "Русский"
-    if db_pool:
-        async with db_pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT target_language_name FROM user_settings WHERE session_id = $1", session_id)
-            if row:
-                target_lang_name = row["target_language_name"]
+    # target_lang_name = "Русский"
+    # if db_pool:
+    #     async with db_pool.acquire() as conn:
+    #         row = await conn.fetchrow("SELECT target_language_name FROM user_settings WHERE session_id = $1", session_id)
+    #         if row:
+    #             target_lang_name = row["target_language_name"]
 
     # 1. Читаем изображение и кодируем в Base64
     contents = await file.read()
@@ -648,8 +667,7 @@ async def image_translate(file: UploadFile = File(...), req: Request = None):
 
     # 2. Формируем промпт для распознавания и перевода
     prompt_text = f"""You are a professional OCR tool and translator. Extract all visible text from the image.
-    If the extracted text is in Russian, translate it to {target_lang_name}.
-    If the extracted text is in any other language, translate it to Russian.
+    Translate it to Russian.
     Output strictly only the translated text without any comments, markdown, or quotes. If there is no text, reply with "На изображении нет текста"."""
 
     headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
