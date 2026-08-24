@@ -8,33 +8,23 @@ function App() {
   const [isInitializing, setIsInitializing] = useState(true);
   const [sessionId, setSessionId] = useState(null);
   const chatContainerRef = useRef(null);
-  const [showAttachMenu, setShowAttachMenu] = useState(false);
+
+  // PWA установки
+  const [deferredPrompt, setDeferredPrompt] = useState(null);
+  const [isAppInstalled, setIsAppInstalled] = useState(false);
+
+  // Запись аудио
   const [isRecording, setIsRecording] = useState(false);
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
 
-  // Создаем ссылки
-  const menuRef = useRef(null);
+  // Файлы
   const fileInputRef = useRef(null);
-  const imageInputRef = useRef(null);
-
-  const [isMobile, setIsMobile] = useState(false);
-  const desktopFileInputRef = useRef(null);
-
-  const [deferredPrompt, setDeferredPrompt] = useState(null);
-  const [isAppInstalled, setIsAppInstalled] = useState(false);
-
-  // Проверяем устройство при загрузке
-  useEffect(() => {
-    const checkMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-    setIsMobile(checkMobile);
-  }, []);
 
   useEffect(() => {
     const initChat = async () => {
       let currentSessionId = localStorage.getItem('translator_session_id');
 
-      // 1. Сначала мгновенно загружаем из localStorage
       if (currentSessionId) {
         const savedHistory = localStorage.getItem('translator_chat_history');
         if (savedHistory) {
@@ -45,7 +35,6 @@ function App() {
         }
       }
 
-      // 2. Затем синхронизируемся с сервером
       try {
         const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
         const headers = {};
@@ -86,7 +75,6 @@ function App() {
     }
   }, [messages, isLoading]);
 
-  // 3. ОБРАБОТКА ПЕРЕКЛЮЧЕНИЯ ВКЛАДОК
   useEffect(() => {
     const handleVisibilityChange = async () => {
       if (document.visibilityState === 'visible') {
@@ -115,35 +103,20 @@ function App() {
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, [messages, sessionId]);
 
-  // 3. ЗАКРЫТИЕ МЕНЮ ПО КЛИКУ ВНЕ ЕГО
+  // PWA Logic
   useEffect(() => {
-    const handleClickOutside = (event) => {
-      if (menuRef.current && !menuRef.current.contains(event.target)) {
-        setShowAttachMenu(false);
-      }
-    };
-
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => {
-      document.removeEventListener("mousedown", handleClickOutside);
-    };
-  }, []);
-
-  // 4. ЛОГИКА УСТАНОВКИ PWA
-  useEffect(() => {
-    // Проверяем, не запущено ли приложение уже как PWA (standalone)
     if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true) {
       setIsAppInstalled(true);
       return;
     }
 
     const handleBeforeInstallPrompt = (e) => {
-      e.preventDefault(); // Предотвращаем показ всплывающего баннера браузера
-      setDeferredPrompt(e); // Сохраняем событие в состоянии
+      e.preventDefault();
+      setDeferredPrompt(e);
     };
 
     const handleAppInstalled = () => {
-      setIsAppInstalled(true); // Скрываем кнопку после установки
+      setIsAppInstalled(true);
       setDeferredPrompt(null);
     };
 
@@ -155,6 +128,16 @@ function App() {
       window.removeEventListener('appinstalled', handleAppInstalled);
     };
   }, []);
+
+  const handleInstallClick = async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    if (outcome === 'accepted') {
+      setIsAppInstalled(true);
+    }
+    setDeferredPrompt(null);
+  };
 
   const sendRequest = async (text, messagesState) => {
     setIsLoading(true);
@@ -265,7 +248,17 @@ function App() {
     }
   };
 
-    // Универсальная обработка PDF
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (!isLoading) {
+        handleSend();
+      }
+    }
+  };
+
+  // === ОБРАБОТКА ФАЙЛОВ (PDF и Фото) ===
+
   const processPdf = async (file) => {
     setIsLoading(true);
     const userMessage = { role: 'user', content: `📄 Загружен файл: ${file.name}` };
@@ -327,16 +320,6 @@ function App() {
     }
   };
 
-  // Обработка выбора PDF (для мобильных)
-  const handleFileChange = async (event) => {
-    const file = event.target.files[0];
-    if (!file) return;
-    setShowAttachMenu(false);
-    await processPdf(file);
-    event.target.value = null;
-  };
-
-  // Универсальная обработка фото
   const processImage = async (file) => {
     setIsLoading(true);
     const userMessage = { role: 'user', content: '📷 Фото для перевода', source_language: 'Фото' };
@@ -374,21 +357,10 @@ function App() {
     }
   };
 
-  // Обработка выбора фото (для мобильных)
-  const handleImageChange = async (event) => {
-    const file = event.target.files[0];
-    if (!file) return;
-    setShowAttachMenu(false);
-    await processImage(file);
-    event.target.value = null;
-  };
-
-  // Обработка выбора файла (для ПК)
-  const handleDesktopFileChange = async (event) => {
+  const handleFileSelect = async (event) => {
     const file = event.target.files[0];
     if (!file) return;
 
-    // Проверяем тип файла и направляем в нужную функцию
     if (file.type === 'application/pdf') {
       await processPdf(file);
     } else if (file.type.startsWith('image/')) {
@@ -398,6 +370,9 @@ function App() {
     }
     event.target.value = null;
   };
+
+  // === АУДИО ===
+
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -470,6 +445,8 @@ function App() {
     }
   };
 
+  // === УРОКИ ===
+
   const handleRetry = async (errorIndex) => {
     if (isLoading) return;
 
@@ -534,27 +511,6 @@ function App() {
     }
   };
 
-  const handleKeyDown = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      if (!isLoading) {
-        handleSend();
-      }
-    }
-  };
-
-  const handleInstallClick = async () => {
-    if (!deferredPrompt) return;
-
-    deferredPrompt.prompt(); // Показываем системное окно "Установить приложение?"
-    const { outcome } = await deferredPrompt.userChoice;
-
-    if (outcome === 'accepted') {
-      setIsAppInstalled(true); // Пользователь нажал "Установить"
-    }
-    setDeferredPrompt(null); // Сбрасываем событие (оно срабатывает только 1 раз)
-  };
-
   const handleSliderChange = (msgIdx, levelIdx) => {
     const newMessages = [...messages];
     newMessages[msgIdx].currentLevelIndex = levelIdx;
@@ -616,7 +572,7 @@ function App() {
   return (
     <div className={`app-container ${messages.length === 0 ? 'empty-state-app' : 'chat-active-app'}`}>
 
-      {/* Кнопка установки PWA показывается только если приложение не установлено и браузер поддерживает установку */}
+      {/* Кнопка установки PWA */}
       {!isAppInstalled && deferredPrompt && (
         <button className="login-btn" onClick={handleInstallClick} aria-label="Установить">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -722,60 +678,21 @@ function App() {
       )}
 
       <div className="input-area">
-              {/* Обертка для скрепки и меню */}
-      <div className="paperclip-wrapper" ref={menuRef}>
-        <button
-          className="action-btn"
-          aria-label="Прикрепить файл"
-          onClick={() => {
-            if (isMobile) {
-              setShowAttachMenu(!showAttachMenu);
-            } else {
-              desktopFileInputRef.current.click();
-            }
-          }}
-        >
+        {/* Кнопка скрепки (системное меню) */}
+        <button className="action-btn" aria-label="Прикрепить файл" onClick={() => fileInputRef.current.click()}>
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
           </svg>
         </button>
 
-        {/* Меню только для мобильных */}
-        {isMobile && showAttachMenu && (
-          <div className="attachment-menu">
-            <div className="menu-item" onClick={() => { setShowAttachMenu(false); imageInputRef.current.click(); }}>
-              <span>Медиатека</span>
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-                <circle cx="8.5" cy="8.5" r="1.5"></circle>
-                <polyline points="21 15 16 10 5 21"></polyline>
-              </svg>
-            </div>
-
-            <div className="menu-item" onClick={() => { setShowAttachMenu(false); imageInputRef.current.click(); }}>
-              <span>Сделать СНИМОК</span>
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
-                <circle cx="12" cy="13" r="4"></circle>
-              </svg>
-            </div>
-
-            <div className="menu-item" onClick={() => { setShowAttachMenu(false); fileInputRef.current.click(); }}>
-              <span>Выбор файлов</span>
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
-              </svg>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Скрытые инпуты для мобильных (Фото и PDF раздельно) */}
-      <input type="file" accept="application/pdf" ref={fileInputRef} style={{ display: 'none' }} onChange={handleFileChange} />
-      <input type="file" accept="image/*" ref={imageInputRef} style={{ display: 'none' }} onChange={handleImageChange} />
-
-      {/* Скрытый инпут для ПК (Фото и PDF вместе) */}
-      <input type="file" accept="image/*,application/pdf" ref={desktopFileInputRef} style={{ display: 'none' }} onChange={handleDesktopFileChange} />
+        {/* Единый скрытый инпут для Фото и PDF */}
+        <input
+          type="file"
+          accept="image/*,application/pdf"
+          ref={fileInputRef}
+          style={{ display: 'none' }}
+          onChange={handleFileSelect}
+        />
 
         <textarea
           value={input}
