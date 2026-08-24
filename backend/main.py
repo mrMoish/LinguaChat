@@ -535,7 +535,7 @@ async def abandon_lesson(req: Request):
 
 # Модель, поддерживающая аудио (DeepSeek этого не умеет)
 # Исправленное название модели (на OpenRouter она называется так)
-AUDIO_MODEL_NAME = "gemini-2.5-flash-lite"
+AUDIO_MODEL_NAME = "gemini-2.5-flash"
 
 
 @app.post("/api/audio_translate")
