@@ -8,21 +8,44 @@ function App() {
   const [isInitializing, setIsInitializing] = useState(true);
   const [sessionId, setSessionId] = useState(null);
   const chatContainerRef = useRef(null);
+  const [showAttachMenu, setShowAttachMenu] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
+
+  // Создаем ссылки
+  const menuRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const imageInputRef = useRef(null);
+
+  const [isMobile, setIsMobile] = useState(false);
+  const desktopFileInputRef = useRef(null);
+
+  const [deferredPrompt, setDeferredPrompt] = useState(null);
+  const [isAppInstalled, setIsAppInstalled] = useState(false);
+
+  // Проверяем устройство при загрузке
+  useEffect(() => {
+    const checkMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    setIsMobile(checkMobile);
+  }, []);
 
   useEffect(() => {
     const initChat = async () => {
       let currentSessionId = localStorage.getItem('translator_session_id');
-      
+
+      // 1. Сначала мгновенно загружаем из localStorage
       if (currentSessionId) {
         const savedHistory = localStorage.getItem('translator_chat_history');
         if (savedHistory) {
-          try { 
+          try {
             const parsed = JSON.parse(savedHistory);
-            setMessages(parsed.filter(m => !m.isError)); 
+            setMessages(parsed.filter(m => !m.isError && !m.isAssessment));
           } catch (e) {}
         }
       }
 
+      // 2. Затем синхронизируемся с сервером
       try {
         const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
         const headers = {};
@@ -33,11 +56,14 @@ function App() {
           const data = await response.json();
           localStorage.setItem('translator_session_id', data.session_id);
           setSessionId(data.session_id);
-          
-          if (data.history && data.history.length > 0) {
-            setMessages(data.history);
-            localStorage.setItem('translator_chat_history', JSON.stringify(data.history));
-          }
+
+          const mappedHistory = data.history.map(m => ({
+            ...m,
+            hideLesson: !data.target_language_code
+          }));
+
+          setMessages(mappedHistory);
+          localStorage.setItem('translator_chat_history', JSON.stringify(mappedHistory));
         }
       } catch (error) {
         console.error('Ошибка загрузки истории:', error);
@@ -50,9 +76,9 @@ function App() {
 
   useEffect(() => {
     if (messages.length > 0) {
-      const cleanMessages = messages.filter(m => !m.isError);
+      const cleanMessages = messages.filter(m => !m.isError && !m.isAssessment);
       localStorage.setItem('translator_chat_history', JSON.stringify(cleanMessages));
-      
+
       const timer = setTimeout(() => {
         window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
       }, 100);
@@ -60,10 +86,80 @@ function App() {
     }
   }, [messages, isLoading]);
 
+  // 3. ОБРАБОТКА ПЕРЕКЛЮЧЕНИЯ ВКЛАДОК
+  useEffect(() => {
+    const handleVisibilityChange = async () => {
+      if (document.visibilityState === 'visible') {
+        if (messages.length > 0 && messages[messages.length - 1].isLesson) {
+          try {
+            const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
+            const headers = {};
+            if (sessionId) headers['X-Session-Id'] = sessionId;
+
+            await fetch(`${backendUrl}/api/abandon_lesson`, {
+              method: 'POST',
+              headers: headers
+            });
+
+            const newMessages = messages.slice(0, -1);
+            setMessages(newMessages);
+            localStorage.setItem('translator_chat_history', JSON.stringify(newMessages));
+          } catch (error) {
+            console.error('Error abandoning lesson:', error);
+          }
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [messages, sessionId]);
+
+  // 3. ЗАКРЫТИЕ МЕНЮ ПО КЛИКУ ВНЕ ЕГО
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (menuRef.current && !menuRef.current.contains(event.target)) {
+        setShowAttachMenu(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, []);
+
+  // 4. ЛОГИКА УСТАНОВКИ PWA
+  useEffect(() => {
+    // Проверяем, не запущено ли приложение уже как PWA (standalone)
+    if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true) {
+      setIsAppInstalled(true);
+      return;
+    }
+
+    const handleBeforeInstallPrompt = (e) => {
+      e.preventDefault(); // Предотвращаем показ всплывающего баннера браузера
+      setDeferredPrompt(e); // Сохраняем событие в состоянии
+    };
+
+    const handleAppInstalled = () => {
+      setIsAppInstalled(true); // Скрываем кнопку после установки
+      setDeferredPrompt(null);
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    window.addEventListener('appinstalled', handleAppInstalled);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      window.removeEventListener('appinstalled', handleAppInstalled);
+    };
+  }, []);
+
   const sendRequest = async (text, messagesState) => {
     setIsLoading(true);
     try {
-      const backendUrl = import.meta.env.VITE_BACKEND_URL || ''; 
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
       const headers = { 'Content-Type': 'application/json' };
       if (sessionId) headers['X-Session-Id'] = sessionId;
 
@@ -74,7 +170,7 @@ function App() {
       });
 
       if (!response.ok) throw new Error('Network response was not ok');
-      
+
       const data = await response.json();
       if (data.session_id) {
         localStorage.setItem('translator_session_id', data.session_id);
@@ -82,7 +178,6 @@ function App() {
       }
 
       const finalMessages = [...messagesState];
-      // Обновляем последнее сообщение пользователя, добавляя исходный язык
       const lastIdx = finalMessages.length - 1;
       if (lastIdx >= 0 && finalMessages[lastIdx].role === 'user') {
         finalMessages[lastIdx] = {
@@ -91,11 +186,15 @@ function App() {
         };
       }
 
-      const aiMessage = { role: 'assistant', content: data.reply };
+      const aiMessage = {
+        role: 'assistant',
+        content: data.reply,
+        hideLesson: !data.target_language_code
+      };
       finalMessages.push(aiMessage);
-      
+
       setMessages(finalMessages);
-      localStorage.setItem('translator_chat_history', JSON.stringify(finalMessages));
+      localStorage.setItem('translator_chat_history', JSON.stringify(finalMessages.filter(m => !m.isError && !m.isAssessment)));
     } catch (error) {
       console.error('Error:', error);
       const errorMessage = {
@@ -111,23 +210,269 @@ function App() {
     }
   };
 
+  const checkLessonAnswer = async (answerText, lessonMsg, messagesState) => {
+    setIsLoading(true);
+    try {
+      const userMessage = { role: 'user', content: answerText };
+      const messagesWithAnswer = [...messagesState, userMessage];
+      setMessages(messagesWithAnswer);
+
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
+      const headers = { 'Content-Type': 'application/json' };
+      if (sessionId) headers['X-Session-Id'] = sessionId;
+
+      const response = await fetch(`${backendUrl}/api/check_lesson`, {
+        method: 'POST',
+        headers: headers,
+        body: JSON.stringify({ lesson_text: lessonMsg.content, user_answer: answerText })
+      });
+
+      if (!response.ok) throw new Error('Network response was not ok');
+
+      const data = await response.json();
+      const evaluationMessage = {
+        role: 'assistant',
+        content: data.evaluation,
+        isEvaluation: true
+      };
+
+      const finalMessages = [...messagesWithAnswer, evaluationMessage];
+      setMessages(finalMessages);
+      localStorage.setItem('translator_chat_history', JSON.stringify(finalMessages.filter(m => !m.isError && !m.isAssessment)));
+    } catch (error) {
+      console.error('Error checking lesson:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
 
-    const cleanMessages = messages.filter(m => !m.isError);
-    const userMessage = { role: 'user', content: input, source_language: null };
-    const newMessages = [...cleanMessages, userMessage];
-    setMessages(newMessages);
+    const cleanMessages = messages.filter(m => !m.isError && !m.isAssessment);
+    const lastMessage = cleanMessages[cleanMessages.length - 1];
 
     const currentInput = input;
     setInput('');
 
-    await sendRequest(currentInput, newMessages);
+    if (lastMessage && lastMessage.isLesson) {
+      await checkLessonAnswer(currentInput, lastMessage, cleanMessages);
+    } else {
+      const userMessage = { role: 'user', content: currentInput, source_language: null };
+      const newMessages = [...cleanMessages, userMessage];
+      setMessages(newMessages);
+      await sendRequest(currentInput, newMessages);
+    }
+  };
+
+    // Универсальная обработка PDF
+  const processPdf = async (file) => {
+    setIsLoading(true);
+    const userMessage = { role: 'user', content: `📄 Загружен файл: ${file.name}` };
+    const aiMessage = { role: 'assistant', content: '' };
+    setMessages(prev => [...prev, userMessage, aiMessage]);
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
+      const headers = {};
+      if (sessionId) headers['X-Session-Id'] = sessionId;
+
+      const response = await fetch(`${backendUrl}/api/upload_pdf`, {
+        method: 'POST',
+        headers: headers,
+        body: formData
+      });
+
+      if (!response.ok) throw new Error('Upload failed');
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunkText = decoder.decode(value, { stream: true });
+
+        setMessages(prev => {
+          const newMsgs = [...prev];
+          newMsgs[newMsgs.length - 1] = {
+            ...newMsgs[newMsgs.length - 1],
+            content: newMsgs[newMsgs.length - 1].content + chunkText
+          };
+          return newMsgs;
+        });
+      }
+
+      setMessages(prev => {
+        localStorage.setItem('translator_chat_history', JSON.stringify(prev.filter(m => !m.isError && !m.isAssessment)));
+        return prev;
+      });
+
+    } catch (error) {
+      console.error('Error uploading file:', error);
+      setMessages(prev => {
+        const newMsgs = [...prev];
+        newMsgs[newMsgs.length - 1] = {
+          ...newMsgs[newMsgs.length - 1],
+          content: 'Ошибка при обработке файла.',
+          isError: true
+        };
+        return newMsgs;
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Обработка выбора PDF (для мобильных)
+  const handleFileChange = async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    setShowAttachMenu(false);
+    await processPdf(file);
+    event.target.value = null;
+  };
+
+  // Универсальная обработка фото
+  const processImage = async (file) => {
+    setIsLoading(true);
+    const userMessage = { role: 'user', content: '📷 Фото для перевода', source_language: 'Фото' };
+    const newMessages = [...messages, userMessage];
+    setMessages(newMessages);
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
+      const headers = {};
+      if (sessionId) headers['X-Session-Id'] = sessionId;
+
+      const response = await fetch(`${backendUrl}/api/image_translate`, {
+        method: 'POST',
+        headers: headers,
+        body: formData
+      });
+
+      if (!response.ok) throw new Error('Image translation failed');
+      const data = await response.json();
+
+      const aiMessage = { role: 'assistant', content: data.reply };
+      const finalMessages = [...newMessages, aiMessage];
+      setMessages(finalMessages);
+      localStorage.setItem('translator_chat_history', JSON.stringify(finalMessages));
+    } catch (error) {
+      console.error('Image error:', error);
+      const errorMessage = { role: 'assistant', content: 'Ошибка распознавания фото.', isError: true };
+      const finalMessages = [...newMessages, errorMessage];
+      setMessages(finalMessages);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Обработка выбора фото (для мобильных)
+  const handleImageChange = async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    setShowAttachMenu(false);
+    await processImage(file);
+    event.target.value = null;
+  };
+
+  // Обработка выбора файла (для ПК)
+  const handleDesktopFileChange = async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    // Проверяем тип файла и направляем в нужную функцию
+    if (file.type === 'application/pdf') {
+      await processPdf(file);
+    } else if (file.type.startsWith('image/')) {
+      await processImage(file);
+    } else {
+      alert('Пожалуйста, выберите изображение или PDF файл.');
+    }
+    event.target.value = null;
+  };
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = async () => {
+        stream.getTracks().forEach(track => track.stop());
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        await sendAudioToServer(audioBlob);
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+    } catch (err) {
+      console.error("Ошибка доступа к микрофону:", err);
+      alert("Нет доступа к микрофону. Разрешите доступ в настройках браузера.");
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+    setIsRecording(false);
+  };
+
+  const sendAudioToServer = async (blob) => {
+    setIsLoading(true);
+
+    const userMessage = { role: 'user', content: '🎤 Голосовое сообщение', source_language: 'Голос' };
+    const newMessages = [...messages, userMessage];
+    setMessages(newMessages);
+
+    try {
+      const formData = new FormData();
+      formData.append('file', blob, 'audio.webm');
+
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
+      const headers = {};
+      if (sessionId) headers['X-Session-Id'] = sessionId;
+
+      const response = await fetch(`${backendUrl}/api/audio_translate`, {
+        method: 'POST',
+        headers: headers,
+        body: formData
+      });
+
+      if (!response.ok) throw new Error('Audio translation failed');
+      const data = await response.json();
+
+      const aiMessage = { role: 'assistant', content: data.reply };
+      const finalMessages = [...newMessages, aiMessage];
+      setMessages(finalMessages);
+      localStorage.setItem('translator_chat_history', JSON.stringify(finalMessages));
+    } catch (error) {
+      console.error('Audio error:', error);
+      const errorMessage = { role: 'assistant', content: 'Ошибка перевода аудио.', isError: true };
+      const finalMessages = [...newMessages, errorMessage];
+      setMessages(finalMessages);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleRetry = async (errorIndex) => {
     if (isLoading) return;
-    
+
     const errorMsgObj = messages[errorIndex];
     if (!errorMsgObj.isError) return;
 
@@ -137,117 +482,229 @@ function App() {
     await sendRequest(errorMsgObj.originalText, messagesWithoutError);
   };
 
-  // Генерация мини-урока
   const generateLesson = async (idx) => {
     if (isLoading) return;
-    
+
     const userMsg = messages[idx - 1];
     const aiMsg = messages[idx];
-    
-    if (!userMsg || userMsg.role !== 'user' || !aiMsg || aiMsg.role !== 'assistant') return;
+    if (!aiMsg || aiMsg.role !== 'assistant') return;
 
-    setIsLoading(true); // Включаем загрузку (появятся три точки внизу)
+    const useHistory = aiMsg.isEvaluation || false;
+
+    setIsLoading(true);
 
     try {
-      const backendUrl = import.meta.env.VITE_BACKEND_URL || ''; 
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
       const headers = { 'Content-Type': 'application/json' };
       if (sessionId) headers['X-Session-Id'] = sessionId;
 
       const response = await fetch(`${backendUrl}/api/lesson`, {
         method: 'POST',
         headers: headers,
-        body: JSON.stringify({ 
-          user_text: userMsg.content, 
-          ai_text: aiMsg.content 
+        body: JSON.stringify({
+          user_text: userMsg?.content || "",
+          ai_text: aiMsg.content,
+          use_history: useHistory
         })
       });
 
       if (!response.ok) throw new Error('Network response was not ok');
-      
+
       const data = await response.json();
-      
-      // Просто добавляем урок в конец массива сообщений
-      const finalMessages = [...messages];
-      finalMessages.push({ role: 'assistant', content: data.lesson, isLesson: true });
-      
-      setMessages(finalMessages);
-      localStorage.setItem('translator_chat_history', JSON.stringify(finalMessages.filter(m => !m.isError)));
+
+      if (data.action === 'assess') {
+        const finalMessages = [...messages];
+        finalMessages.push({
+          role: 'assistant',
+          isAssessment: true,
+          texts: data.texts,
+          currentLevelIndex: 1
+        });
+        setMessages(finalMessages);
+      } else {
+        const finalMessages = [...messages];
+        finalMessages.push({ role: 'assistant', content: data.lesson, isLesson: true });
+        setMessages(finalMessages);
+        localStorage.setItem('translator_chat_history', JSON.stringify(finalMessages.filter(m => !m.isError && !m.isAssessment)));
+      }
     } catch (error) {
       console.error('Error:', error);
-      const finalMessages = [...messages];
-      finalMessages.push({ role: 'assistant', content: 'Не удалось загрузить урок.', isError: true });
-      setMessages(finalMessages);
     } finally {
       setIsLoading(false);
     }
   };
 
   const handleKeyDown = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) { 
-      e.preventDefault(); 
-      handleSend(); 
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (!isLoading) {
+        handleSend();
+      }
+    }
+  };
+
+  const handleInstallClick = async () => {
+    if (!deferredPrompt) return;
+
+    deferredPrompt.prompt(); // Показываем системное окно "Установить приложение?"
+    const { outcome } = await deferredPrompt.userChoice;
+
+    if (outcome === 'accepted') {
+      setIsAppInstalled(true); // Пользователь нажал "Установить"
+    }
+    setDeferredPrompt(null); // Сбрасываем событие (оно срабатывает только 1 раз)
+  };
+
+  const handleSliderChange = (msgIdx, levelIdx) => {
+    const newMessages = [...messages];
+    newMessages[msgIdx].currentLevelIndex = levelIdx;
+    setMessages(newMessages);
+  };
+
+  const confirmLevel = async (msgIdx) => {
+    const assessmentMsg = messages[msgIdx];
+    const levelMap = ["0", "A1", "A2", "B1", "B2", "C1", "C2"];
+    const selectedLevelStr = levelMap[assessmentMsg.currentLevelIndex];
+    const selectedText = assessmentMsg.texts[assessmentMsg.currentLevelIndex];
+
+    setIsLoading(true);
+    try {
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
+      const headers = { 'Content-Type': 'application/json' };
+      if (sessionId) headers['X-Session-Id'] = sessionId;
+
+      await fetch(`${backendUrl}/api/set_level`, {
+        method: 'POST',
+        headers: headers,
+        body: JSON.stringify({ level: selectedLevelStr })
+      });
+
+      const newMessages = [...messages];
+      newMessages[msgIdx] = {
+        role: 'assistant',
+        content: `Переведите:\n\n${selectedText}`,
+        isLesson: true
+      };
+      setMessages(newMessages);
+      localStorage.setItem('translator_chat_history', JSON.stringify(newMessages.filter(m => !m.isError && !m.isAssessment)));
+    } catch (error) {
+      console.error('Error saving level:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const dismissLesson = async (msgIdx) => {
+    const newMessages = [...messages];
+    newMessages.splice(msgIdx, 1);
+    setMessages(newMessages);
+    localStorage.setItem('translator_chat_history', JSON.stringify(newMessages.filter(m => !m.isError && !m.isAssessment)));
+
+    try {
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
+      const headers = {};
+      if (sessionId) headers['X-Session-Id'] = sessionId;
+      await fetch(`${backendUrl}/api/abandon_lesson`, {
+        method: 'POST',
+        headers: headers
+      });
+    } catch (e) {
+      console.error('Error abandoning lesson on server:', e);
     }
   };
 
   return (
     <div className={`app-container ${messages.length === 0 ? 'empty-state-app' : 'chat-active-app'}`}>
-      
-      <button className="login-btn" aria-label="Войти">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-          <circle cx="12" cy="7" r="4"></circle>
-        </svg>
-        <span>Войти</span>
-      </button>
+
+      {/* Кнопка установки PWA показывается только если приложение не установлено и браузер поддерживает установку */}
+      {!isAppInstalled && deferredPrompt && (
+        <button className="login-btn" onClick={handleInstallClick} aria-label="Установить">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="7 10 12 15 17 10"></polyline>
+            <line x1="12" y1="15" x2="12" y2="3"></line>
+          </svg>
+          <span>Установить</span>
+        </button>
+      )}
 
       {messages.length > 0 ? (
         <div className="chat-container" ref={chatContainerRef}>
-            {messages.map((msg, idx) => {
-            // Проверяем, последнее ли это сообщение в массиве
+          {messages.map((msg, idx) => {
             const isLastMessage = idx === messages.length - 1;
-            
+
+            if (msg.isAssessment) {
+              return (
+                <div key={idx} className="message-wrapper assistant">
+                  <div className="message assessment-card">
+                    <div className="assessment-content-wrapper">
+                      <div className="assessment-text-area">
+                        {msg.currentLevelIndex === 0 ? (
+                          <p className="beginner-text">Я только начал учить язык</p>
+                        ) : (
+                          <div style={{ whiteSpace: 'pre-wrap' }}>
+                            {msg.texts[msg.currentLevelIndex]}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="assessment-slider">
+                        {[6, 5, 4, 3, 2, 1, 0].map((levelIdx) => (
+                          <div
+                            key={levelIdx}
+                            className={`slider-dot ${msg.currentLevelIndex === levelIdx ? 'active' : ''}`}
+                            onClick={() => handleSliderChange(idx, levelIdx)}
+                          ></div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="assessment-footer">
+                      <span className="assessment-prompt-text">Выберите свой уровень языка</span>
+                      <button
+                        className="confirm-level-btn"
+                        onClick={() => confirmLevel(idx)}
+                        disabled={isLoading}
+                      >
+                        Это мой уровень
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            }
             return (
               <div key={idx} className={`message-wrapper ${msg.role}`}>
-                
-                {/* Само сообщение (пузырь) */}
-                <div className={`message ${msg.role} ${msg.isError ? 'error-message' : ''} ${msg.isLesson ? 'lesson-message' : ''}`}>
-                  <div style={{ whiteSpace: 'pre-wrap' }}>
-                    {msg.content}
-                  </div>
-                  
+                <div className={`message ${msg.role} ${msg.isError ? 'error-message' : ''} ${msg.isLesson ? 'lesson-message' : ''} ${msg.isEvaluation ? 'evaluation-message' : ''}`}>
+                  {msg.isLesson && isLastMessage && (
+                    <button className="lesson-close-btn" onClick={() => dismissLesson(idx)} aria-label="Закрыть">
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                      </svg>
+                    </button>
+                  )}
+                  <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
                   {msg.isError && (
-                    <button 
-                      className="retry-btn" 
-                      onClick={() => handleRetry(idx)}
-                      disabled={isLoading}
-                    >
+                    <button className="retry-btn" onClick={() => handleRetry(idx)} disabled={isLoading}>
                       Попробовать снова
                     </button>
                   )}
                 </div>
 
-                {/* Исходный язык ВНЕ сообщения, но ВНУТРИ обертки (под сообщением пользователя) */}
                 {msg.role === 'user' && msg.source_language && (
-                  <div className="source-language-tag">
-                    {msg.source_language}
-                  </div>
+                  <div className="source-language-tag">{msg.source_language}</div>
                 )}
 
-                {/* Кнопка Мини-урок ВНЕ сообщения, только для последнего ответа ИИ */}
-                {msg.role === 'assistant' && !msg.isError && !msg.isLesson && isLastMessage && !isLoading && (
-                  <button 
-                    className="lesson-btn" 
-                    onClick={() => generateLesson(idx)}
-                    disabled={isLoading}
-                  >
+                {msg.role === 'assistant' && !msg.isError && !msg.isLesson && !msg.hideLesson && isLastMessage && !isLoading && (
+                  <button className="lesson-btn" onClick={() => generateLesson(idx)} disabled={isLoading}>
                     🎓 Мини-урок
                   </button>
                 )}
-
               </div>
             );
           })}
-          
+
           {isLoading && (
             <div className="message-wrapper assistant">
               <div className="message assistant typing">
@@ -265,11 +722,60 @@ function App() {
       )}
 
       <div className="input-area">
-        <button className="action-btn" aria-label="Прикрепить файл">
+              {/* Обертка для скрепки и меню */}
+      <div className="paperclip-wrapper" ref={menuRef}>
+        <button
+          className="action-btn"
+          aria-label="Прикрепить файл"
+          onClick={() => {
+            if (isMobile) {
+              setShowAttachMenu(!showAttachMenu);
+            } else {
+              desktopFileInputRef.current.click();
+            }
+          }}
+        >
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
           </svg>
         </button>
+
+        {/* Меню только для мобильных */}
+        {isMobile && showAttachMenu && (
+          <div className="attachment-menu">
+            <div className="menu-item" onClick={() => { setShowAttachMenu(false); imageInputRef.current.click(); }}>
+              <span>Медиатека</span>
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                <polyline points="21 15 16 10 5 21"></polyline>
+              </svg>
+            </div>
+
+            <div className="menu-item" onClick={() => { setShowAttachMenu(false); imageInputRef.current.click(); }}>
+              <span>Сделать СНИМОК</span>
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+                <circle cx="12" cy="13" r="4"></circle>
+              </svg>
+            </div>
+
+            <div className="menu-item" onClick={() => { setShowAttachMenu(false); fileInputRef.current.click(); }}>
+              <span>Выбор файлов</span>
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+              </svg>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Скрытые инпуты для мобильных (Фото и PDF раздельно) */}
+      <input type="file" accept="application/pdf" ref={fileInputRef} style={{ display: 'none' }} onChange={handleFileChange} />
+      <input type="file" accept="image/*" ref={imageInputRef} style={{ display: 'none' }} onChange={handleImageChange} />
+
+      {/* Скрытый инпут для ПК (Фото и PDF вместе) */}
+      <input type="file" accept="image/*,application/pdf" ref={desktopFileInputRef} style={{ display: 'none' }} onChange={handleDesktopFileChange} />
 
         <textarea
           value={input}
@@ -277,21 +783,28 @@ function App() {
           onKeyDown={handleKeyDown}
           placeholder="Введите текст..."
           rows={1}
-          disabled={isLoading}
         />
 
-        <button className="action-btn" aria-label="Голосовой ввод">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
-            <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
-            <line x1="12" y1="19" x2="12" y2="23"></line>
-            <line x1="8" y1="23" x2="16" y2="23"></line>
-          </svg>
+        <button
+          className={`action-btn mic-btn ${isRecording ? 'recording' : ''}`}
+          onClick={isRecording ? stopRecording : startRecording}
+          aria-label="Голосовой ввод"
+        >
+          {isRecording ? (
+            <span className="rec-dot"></span>
+          ) : (
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+              <line x1="12" y1="19" x2="12" y2="23"></line>
+              <line x1="8" y1="23" x2="16" y2="23"></line>
+            </svg>
+          )}
         </button>
 
-        <button 
-          onClick={handleSend} 
-          disabled={!input.trim() || isLoading} 
+        <button
+          onClick={handleSend}
+          disabled={!input.trim() || isLoading}
           className="send-btn"
           aria-label="Отправить"
         >
