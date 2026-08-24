@@ -83,7 +83,7 @@ If the message is written in a foreign language:
 * reply in Russian and ask which language the user wants to learn.
 
 For example:
-`"На какой язык вы хотите переводить текст?"`
+`"На какой язык вы хотите переводить русские сообщения?"`
 """
 
 

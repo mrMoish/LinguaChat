@@ -517,7 +517,7 @@ function App() {
     setMessages(newMessages);
   };
 
-  const confirmLevel = async (msgIdx) => {
+    const confirmLevel = async (msgIdx) => {
     const assessmentMsg = messages[msgIdx];
     const levelMap = ["0", "A1", "A2", "B1", "B2", "C1", "C2"];
     const selectedLevelStr = levelMap[assessmentMsg.currentLevelIndex];
@@ -529,20 +529,59 @@ function App() {
       const headers = { 'Content-Type': 'application/json' };
       if (sessionId) headers['X-Session-Id'] = sessionId;
 
+      // 1. Сохраняем уровень на бэкенде
       await fetch(`${backendUrl}/api/set_level`, {
         method: 'POST',
         headers: headers,
         body: JSON.stringify({ level: selectedLevelStr })
       });
 
-      const newMessages = [...messages];
-      newMessages[msgIdx] = {
-        role: 'assistant',
-        content: `Переведите:\n\n${selectedText}`,
-        isLesson: true
-      };
-      setMessages(newMessages);
-      localStorage.setItem('translator_chat_history', JSON.stringify(newMessages.filter(m => !m.isError && !m.isAssessment)));
+      // 2. Если уровень "0" (Абсолютный новичок)
+      if (selectedLevelStr === "0") {
+        // Берем контекст из последнего реального перевода (перед карточкой оценки)
+        const userMsg = messages[msgIdx - 2];
+        const aiMsg = messages[msgIdx - 1];
+
+        // Превращаем карточку оценки в пустой урок (заглушку)
+        const newMessages = [...messages];
+        newMessages[msgIdx] = { role: 'assistant', content: '', isLesson: true };
+        setMessages(newMessages);
+
+        // Отправляем запрос на генерацию урока
+        const lessonResponse = await fetch(`${backendUrl}/api/lesson`, {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify({
+            user_text: userMsg?.content || "",
+            ai_text: aiMsg?.content || "",
+            use_history: false
+          })
+        });
+
+        if (!lessonResponse.ok) throw new Error('Lesson generation failed');
+        const data = await lessonResponse.json();
+
+        // Заменяем заглушку на реальный урок
+        const finalMessages = [...newMessages];
+        finalMessages[msgIdx] = {
+          role: 'assistant',
+          content: data.lesson || "Не удалось создать урок.",
+          isLesson: true
+        };
+        setMessages(finalMessages);
+        localStorage.setItem('translator_chat_history', JSON.stringify(finalMessages.filter(m => !m.isError && !m.isAssessment)));
+
+      } else {
+        // 3. Обычная логика (для уровней A1 - C2)
+        const newMessages = [...messages];
+        newMessages[msgIdx] = {
+          role: 'assistant',
+          content: `🎓Мини-урок! Переведите:\n\n${selectedText}`,
+          isLesson: true
+        };
+        setMessages(newMessages);
+        localStorage.setItem('translator_chat_history', JSON.stringify(newMessages.filter(m => !m.isError && !m.isAssessment)));
+      }
     } catch (error) {
       console.error('Error saving level:', error);
     } finally {
