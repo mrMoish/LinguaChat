@@ -13,6 +13,7 @@ import random
 from fastapi import UploadFile, File
 from pypdf import PdfReader
 import io
+import base64
 
 load_dotenv()
 
@@ -530,6 +531,97 @@ async def abandon_lesson(req: Request):
                 )
 
     return {"status": "ok"}
+
+
+# Модель, поддерживающая аудио (DeepSeek этого не умеет)
+# Исправленное название модели (на OpenRouter она называется так)
+AUDIO_MODEL_NAME = "gemini-2.5-flash-lite"
+
+
+@app.post("/api/audio_translate")
+async def audio_translate(file: UploadFile = File(...), req: Request = None):
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(status_code=500, detail="OpenRouter API Key not configured")
+
+    session_id_str = get_session_id(req)
+    session_id = uuid.UUID(session_id_str)
+
+    target_lang_name = "Русский"
+    if db_pool:
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT target_language_name FROM user_settings WHERE session_id = $1",
+                                      session_id)
+            if row:
+                target_lang_name = row["target_language_name"]
+
+    # 1. Читаем аудиофайл и кодируем в Base64
+    contents = await file.read()
+    base64_audio = base64.b64encode(contents).decode('utf-8')
+
+    # Жестко задаем webm, так как MediaRecorder обычно пишет в нем
+    mime_type = 'audio/webm'
+    data_uri = f"data:{mime_type};base64,{base64_audio}"
+
+    # 2. Формируем промпт для перевода
+    prompt_text = f"""You are a professional translator. Listen to the audio. 
+    If the user speaks in Russian, translate it to {target_lang_name}.
+    If the user speaks in any other language, translate it to Russian.
+    Output strictly only the translated text without any comments, markdown, or quotes."""
+
+    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
+    payload = {
+        "model": AUDIO_MODEL_NAME,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt_text},
+                    {"type": "image_url", "image_url": {"url": data_uri}}
+                ]
+            }
+        ]
+    }
+
+    try:
+        # 3. Отправляем запрос в OpenRouter
+        async with httpx.AsyncClient() as client:
+            response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload,
+                                         timeout=60.0)
+
+            # Если OpenRouter вернул ошибку (например, 400 Bad Request), читаем текст ошибки
+            if response.status_code != 200:
+                error_text = response.text
+                print(f"OpenRouter Audio Error: {error_text}")
+                raise HTTPException(status_code=response.status_code, detail=f"OpenRouter API Error: {error_text}")
+
+            data = response.json()
+
+            # Проверяем, не вернул ли OpenRouter пустой ответ
+            if "choices" not in data or not data["choices"]:
+                print(f"OpenRouter Empty Response: {data}")
+                raise HTTPException(status_code=500, detail="ИИ не вернул ответ для этого аудио.")
+
+            ai_reply = data["choices"][0]["message"]["content"].strip()
+
+        # 4. Сохраняем в историю чата
+        if db_pool:
+            async with db_pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO chat_history (session_id, role, content, source_language) VALUES ($1, $2, $3, $4)",
+                    session_id, "user", "🎤 Голосовое сообщение", "audio"
+                )
+                await conn.execute(
+                    "INSERT INTO chat_history (session_id, role, content) VALUES ($1, $2, $3)",
+                    session_id, "assistant", ai_reply
+                )
+
+        return {"reply": ai_reply, "source_language": "Голос"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Audio Processing Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/")
 def read_root():

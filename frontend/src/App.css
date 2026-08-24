@@ -488,3 +488,36 @@ body::-webkit-scrollbar-thumb:hover {
 .menu-item svg {
   color: #ffffff;
 }
+
+/* Кнопка микрофона */
+.mic-btn {
+  transition: background-color 0.2s, color 0.2s;
+}
+
+/* Состояние записи (красный фон) */
+.mic-btn.recording {
+  background-color: #fee2e2;
+  color: #ef4444;
+  animation: pulse-border 1.5s infinite;
+}
+
+/* Красная пульсирующая точка */
+.rec-dot {
+  width: 14px;
+  height: 14px;
+  background-color: #ef4444;
+  border-radius: 50%;
+  animation: pulse-dot 1s infinite;
+}
+
+@keyframes pulse-dot {
+  0% { transform: scale(0.8); opacity: 0.8; }
+  50% { transform: scale(1.2); opacity: 1; }
+  100% { transform: scale(0.8); opacity: 0.8; }
+}
+
+@keyframes pulse-border {
+  0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+  70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+}

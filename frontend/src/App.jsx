@@ -9,6 +9,10 @@ function App() {
   const [sessionId, setSessionId] = useState(null);
   const chatContainerRef = useRef(null);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
+
 
   // Создаем ссылку на обертку скрепки
   const menuRef = useRef(null);
@@ -236,7 +240,7 @@ function App() {
     }
   };
 
-    const handleFileChange = async (event) => {
+  const handleFileChange = async (event) => {
     const file = event.target.files[0];
     if (!file) return;
 
@@ -310,6 +314,83 @@ function App() {
       event.target.value = null; // Сбрасываем инпут
     }
   };
+
+  const startRecording = async () => {
+    try {
+      // Запрашиваем доступ к микрофону
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = async () => {
+        // Останавливаем все потоки микрофона
+        stream.getTracks().forEach(track => track.stop());
+
+        // Создаем аудиофайл
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        await sendAudioToServer(audioBlob);
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+    } catch (err) {
+      console.error("Ошибка доступа к микрофону:", err);
+      alert("Нет доступа к микрофону. Разрешите доступ в настройках браузера.");
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+    setIsRecording(false);
+  };
+
+  const sendAudioToServer = async (blob) => {
+    setIsLoading(true);
+
+    const userMessage = { role: 'user', content: '🎤 Голосовое сообщение', source_language: 'Голос' };
+    const newMessages = [...messages, userMessage];
+    setMessages(newMessages);
+
+    try {
+      const formData = new FormData();
+      formData.append('file', blob, 'audio.webm');
+
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
+      const headers = {};
+      if (sessionId) headers['X-Session-Id'] = sessionId;
+
+      const response = await fetch(`${backendUrl}/api/audio_translate`, {
+        method: 'POST',
+        headers: headers,
+        body: formData
+      });
+
+      if (!response.ok) throw new Error('Audio translation failed');
+      const data = await response.json();
+
+      const aiMessage = { role: 'assistant', content: data.reply };
+      const finalMessages = [...newMessages, aiMessage];
+      setMessages(finalMessages);
+      localStorage.setItem('translator_chat_history', JSON.stringify(finalMessages));
+    } catch (error) {
+      console.error('Audio error:', error);
+      const errorMessage = { role: 'assistant', content: 'Ошибка перевода аудио.', isError: true };
+      const finalMessages = [...newMessages, errorMessage];
+      setMessages(finalMessages);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
 
   const handleRetry = async (errorIndex) => {
     if (isLoading) return;
@@ -612,13 +693,21 @@ function App() {
           rows={1}
         />
 
-        <button className="action-btn" aria-label="Голосовой ввод">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
-            <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
-            <line x1="12" y1="19" x2="12" y2="23"></line>
-            <line x1="8" y1="23" x2="16" y2="23"></line>
-          </svg>
+        <button
+          className={`action-btn mic-btn ${isRecording ? 'recording' : ''}`}
+          onClick={isRecording ? stopRecording : startRecording}
+          aria-label="Голосовой ввод"
+        >
+          {isRecording ? (
+            <span className="rec-dot"></span>
+          ) : (
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+              <line x1="12" y1="19" x2="12" y2="23"></line>
+              <line x1="8" y1="23" x2="16" y2="23"></line>
+            </svg>
+          )}
         </button>
 
         <button
