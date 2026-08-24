@@ -8,6 +8,11 @@ function App() {
   const [isInitializing, setIsInitializing] = useState(true);
   const [sessionId, setSessionId] = useState(null);
   const chatContainerRef = useRef(null);
+  const [showAttachMenu, setShowAttachMenu] = useState(false);
+
+  // Создаем ссылку на обертку скрепки
+  const menuRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     const initChat = async () => {
@@ -99,6 +104,24 @@ function App() {
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, [messages, sessionId]);
+
+  // 3. ЗАКРЫТИЕ МЕНЮ ПО КЛИКУ ВНЕ ЕГО
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      // Если кликнули не внутри обертки меню (menuRef.current)
+      if (menuRef.current && !menuRef.current.contains(event.target)) {
+        setShowAttachMenu(false);
+      }
+    };
+
+    // Вешаем слушатель на весь документ при монтировании
+    document.addEventListener("mousedown", handleClickOutside);
+
+    // Убираем слушатель при размонтировании
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, []);
 
   const sendRequest = async (text, messagesState) => {
     setIsLoading(true);
@@ -213,6 +236,81 @@ function App() {
     }
   };
 
+    const handleFileChange = async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    setShowAttachMenu(false); // Закрываем меню
+    setIsLoading(true);
+
+    // Создаем сообщение пользователя и пустое сообщение для ИИ (которое будем заполнять)
+    const userMessage = { role: 'user', content: `📄 Загружен файл: ${file.name}` };
+    const aiMessage = { role: 'assistant', content: '' };
+
+    // Обновляем состояние
+    setMessages(prev => [...prev, userMessage, aiMessage]);
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
+      const headers = {};
+      if (sessionId) headers['X-Session-Id'] = sessionId;
+
+      const response = await fetch(`${backendUrl}/api/upload_pdf`, {
+        method: 'POST',
+        headers: headers,
+        body: formData
+      });
+
+      if (!response.ok) throw new Error('Upload failed');
+
+      // Читаем потоковый ответ
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        // Декодируем кусок текста
+        const chunkText = decoder.decode(value, { stream: true });
+
+        // Добавляем текст к последнему сообщению (переводу)
+        setMessages(prev => {
+          const newMsgs = [...prev];
+          newMsgs[newMsgs.length - 1] = {
+            ...newMsgs[newMsgs.length - 1],
+            content: newMsgs[newMsgs.length - 1].content + chunkText
+          };
+          return newMsgs;
+        });
+      }
+
+      // Сохраняем финальный результат в localStorage
+      setMessages(prev => {
+        localStorage.setItem('translator_chat_history', JSON.stringify(prev.filter(m => !m.isError && !m.isAssessment)));
+        return prev;
+      });
+
+    } catch (error) {
+      console.error('Error uploading file:', error);
+      setMessages(prev => {
+        const newMsgs = [...prev];
+        newMsgs[newMsgs.length - 1] = {
+          ...newMsgs[newMsgs.length - 1],
+          content: 'Ошибка при обработке файла.',
+          isError: true
+        };
+        return newMsgs;
+      });
+    } finally {
+      setIsLoading(false);
+      event.target.value = null; // Сбрасываем инпут
+    }
+  };
+
   const handleRetry = async (errorIndex) => {
     if (isLoading) return;
 
@@ -248,7 +346,7 @@ function App() {
         body: JSON.stringify({
           user_text: userMsg?.content || "",
           ai_text: aiMsg.content,
-          use_history: useHistory // Отправляем флаг!
+          use_history: useHistory // Отправляем лаг!
         })
       });
 
@@ -458,12 +556,54 @@ function App() {
       )}
 
       <div className="input-area">
-        <button className="action-btn" aria-label="Прикрепить файл">
+      {/* Обертка для скрепки и меню */}
+      <div className="paperclip-wrapper" ref={menuRef}>
+        <button className="action-btn" aria-label="Прикрепить файл" onClick={() => setShowAttachMenu(!showAttachMenu)}>
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
           </svg>
         </button>
 
+        {/* Само меню */}
+        {showAttachMenu && (
+          <div className="attachment-menu">
+            <div className="menu-item" onClick={() => { console.log("Медиатека"); setShowAttachMenu(false); }}>
+              <span>Медиатека</span>
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                <polyline points="21 15 16 10 5 21"></polyline>
+              </svg>
+            </div>
+
+            <div className="menu-item" onClick={() => { console.log("Снимок"); setShowAttachMenu(false); }}>
+              <span>Сделать снимок</span>
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+                <circle cx="12" cy="13" r="4"></circle>
+              </svg>
+            </div>
+
+            <div className="menu-item" onClick={() => {
+                setShowAttachMenu(false);
+                fileInputRef.current.click();
+            }}>
+              <span>Выбор файлов</span>
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+              </svg>
+            </div>
+          </div>
+        )}
+      </div>
+      {/* Скрытый инпут для загрузки файлов */}
+      <input
+        type="file"
+        accept="application/pdf"
+        ref={fileInputRef}
+        style={{ display: 'none' }}
+        onChange={handleFileChange}
+      />
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}

@@ -3,12 +3,16 @@ import uuid
 import json
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import httpx
 import asyncpg
 from dotenv import load_dotenv
-from prompts import SETUP_SYSTEM_PROMPT, get_translation_prompt, get_lesson_prompt, get_assessment_prompt, get_single_word_prompt, get_lesson_evaluation_prompt, get_lesson_from_history_prompt
+from prompts import SETUP_SYSTEM_PROMPT, get_translation_prompt, get_lesson_prompt, get_assessment_prompt, get_single_word_prompt, get_lesson_evaluation_prompt, get_lesson_from_history_prompt, get_translation_pdf_prompt
 import random
+from fastapi import UploadFile, File
+from pypdf import PdfReader
+import io
 
 load_dotenv()
 
@@ -51,6 +55,16 @@ async def startup():
                         session_id UUID NOT NULL,
                         role VARCHAR(50) NOT NULL,
                         content TEXT NOT NULL,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+                # НОВАЯ ТАБЛИЦА ДЛЯ ОРИГИНАЛЬНЫХ ТЕКСТОВ PDF
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS documents (
+                        id SERIAL PRIMARY KEY,
+                        session_id UUID NOT NULL,
+                        filename VARCHAR(255),
+                        original_text TEXT NOT NULL,
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                     )
                 ''')
@@ -135,14 +149,14 @@ async def get_history(req: Request):
 
             # 2. Достаем очищенную историю
             rows = await conn.fetch(
-                "SELECT role, content, is_lesson, source_language FROM chat_history WHERE session_id = $1 ORDER BY created_at ASC",
+                "SELECT role, content, is_lesson, is_evaluation, source_language FROM chat_history WHERE session_id = $1 ORDER BY created_at ASC",
                 session_id
             )
             history = [{
                 "role": row["role"],
                 "content": row["content"],
                 "isLesson": row["is_lesson"],
-                "isEvaluation": row["is_evaluation"], # ДОБАВИЛИ
+                "isEvaluation": row["is_evaluation"],
                 "source_language": row["source_language"]
             } for row in rows]
 
@@ -396,6 +410,86 @@ async def check_lesson(request: CheckLessonRequest, req: Request):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/upload_pdf")
+async def upload_pdf(file: UploadFile = File(...), req: Request = None):
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(status_code=500, detail="OpenRouter API Key not configured")
+
+    session_id_str = get_session_id(req)
+    session_id = uuid.UUID(session_id_str)
+
+    # 1. Читаем PDF
+    contents = await file.read()
+    reader = PdfReader(io.BytesIO(contents))
+
+    extracted_text = ""
+    for page in reader.pages:
+        extracted_text += page.extract_text() + "\n"
+
+    extracted_text = extracted_text.strip()
+    if not extracted_text:
+        raise HTTPException(status_code=400, detail="Не удалось извлечь текст или файл пуст.")
+
+    # 2. Сохраняем ОРИГИНАЛЬНЫЙ текст в базу данных
+    if db_pool:
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO documents (session_id, filename, original_text) VALUES ($1, $2, $3)",
+                session_id, file.filename, extracted_text
+            )
+
+    # 3. Разбиваем текст на части (по 2000 символов)
+    chunk_size = 2000
+    chunks = [extracted_text[i:i + chunk_size] for i in range(0, len(extracted_text), chunk_size)]
+    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
+
+    # 4. Создаем генератор для потоковой передачи
+    async def translate_stream():
+        full_translation = ""
+        # Используем один клиент для всех запросов
+        async with httpx.AsyncClient() as client:
+            for i, chunk in enumerate(chunks):
+                system_prompt = """You are a professional translator. Translate the following part of a document to Russian. 
+                Output only the translated text without any markdown or comments."""
+
+                payload = {
+                    "model": MODEL_NAME,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": chunk}
+                    ]
+                }
+
+                try:
+                    response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers,
+                                                 json=payload, timeout=60.0)
+                    response.raise_for_status()
+                    data = response.json()
+                    translated_chunk = data["choices"][0]["message"]["content"].strip()
+                    full_translation += translated_chunk + "\n"
+
+                    # Отправляем часть перевода на фронтенд
+                    yield translated_chunk + "\n"
+                except Exception as e:
+                    yield f"\n[Ошибка перевода части {i + 1}]\n"
+
+        # 5. После завершения перевода сохраняем весь перевод в историю чата
+        if db_pool:
+            async with db_pool.acquire() as conn:
+                user_msg = f"📄 Загружен файл: {file.filename}"
+                await conn.execute(
+                    "INSERT INTO chat_history (session_id, role, content) VALUES ($1, $2, $3)",
+                    session_id, "user", user_msg
+                )
+                await conn.execute(
+                    "INSERT INTO chat_history (session_id, role, content) VALUES ($1, $2, $3)",
+                    session_id, "assistant", full_translation
+                )
+
+    # Возвращаем потоковый ответ
+    return StreamingResponse(translate_stream(), media_type="text/plain")
 
 @app.post("/api/set_level")
 async def set_level(request: SetLevelRequest, req: Request):
