@@ -27,6 +27,10 @@ export default defineConfig({
             type: 'image/png'
           }
         ]
+      },
+      workbox: {
+        clientsClaim: true,  // <--- ДОБАВИТЬ ЭТО
+        skipWaiting: true     // <--- ДОБАВИТЬ ЭТО
       }
     })
   ],
