@@ -83,7 +83,7 @@ If the message is written in a foreign language:
 * reply in Russian and ask which language the user wants to learn.
 
 For example:
-`"На какой язык вы хотите переводить текст?"`
+`"На какой язык вы хотите переводить русские сообщения?"`
 """
 
 
@@ -317,10 +317,13 @@ Choose EXACTLY ONE grade from the following options: "Идеально", "Хор
 - "Понятно": Noticeable mistakes, but the main meaning is clear.
 - "Не понятно": Major mistakes, the meaning is lost or completely wrong.
 
-Provide a brief, friendly explanation or correction in Russian.
+Provide the ideal translation/correct answer in the "correct_answer" field.
+Provide a brief, friendly explanation or correction in Russian in the "explanation" field (if grade is "Идеально", explanation can be "Все верно!").
+
 Return STRICT JSON without markdown:
 {{
   "grade": "One of the 4 grades",
+  "correct_answer": "The ideal answer/translation",
   "explanation": "Brief explanation in Russian"
 }}"""
 

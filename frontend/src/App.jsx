@@ -46,13 +46,41 @@ function App() {
           localStorage.setItem('translator_session_id', data.session_id);
           setSessionId(data.session_id);
 
-          const mappedHistory = data.history.map(m => ({
-            ...m,
-            hideLesson: !data.target_language_code
-          }));
+          // 1. Получаем сырую историю из базы
+          const rawHistory = data.history.map(m => ({ ...m, hideLesson: !data.target_language_code }));
 
-          setMessages(mappedHistory);
-          localStorage.setItem('translator_chat_history', JSON.stringify(mappedHistory));
+          // 2. Обрабатываем оценки: переносим данные на сообщение пользователя, а сообщение ИИ скрываем
+          for (let i = 0; i < rawHistory.length; i++) {
+            if (rawHistory[i].role === 'assistant' && rawHistory[i].isEvaluation) {
+              try {
+                const evalData = JSON.parse(rawHistory[i].content);
+                rawHistory[i].evalData = evalData;
+
+                if (i > 0 && rawHistory[i-1].role === 'user') {
+                  rawHistory[i-1].evalData = evalData;
+                  // Показываем ссылку "объяснить" только для Хорошо и Понятно
+                  if (evalData.grade === 'Хорошо' || evalData.grade === 'Понятно') {
+                    rawHistory[i-1].showExplainLink = true;
+                  }
+                }
+              } catch (e) {}
+            }
+          }
+
+          // 3. Фильтруем: оставляем сообщение ИИ только если оценка "Не понятно"
+          const visibleHistory = rawHistory.filter(m => {
+            if (m.role === 'assistant' && m.isEvaluation && m.evalData) {
+              if (m.evalData.grade === 'Не понятно') {
+                m.content = m.evalData.correct_answer;
+                return true; // Оставляем
+              }
+              return false; // Скрываем все остальные оценки (Идеально, Хорошо, Понятно)
+            }
+            return true;
+          });
+
+          setMessages(visibleHistory);
+          localStorage.setItem('translator_chat_history', JSON.stringify(visibleHistory));
         }
       } catch (error) {
         console.error('Ошибка загрузки истории:', error);
@@ -213,13 +241,26 @@ function App() {
       if (!response.ok) throw new Error('Network response was not ok');
 
       const data = await response.json();
-      const evaluationMessage = {
-        role: 'assistant',
-        content: data.evaluation,
-        isEvaluation: true
-      };
 
-      const finalMessages = [...messagesWithAnswer, evaluationMessage];
+      const finalMessages = [...messagesWithAnswer];
+
+      // Прикрепляем оценку к сообщению пользователя
+      finalMessages[finalMessages.length - 1].evalData = {
+        grade: data.grade,
+        correct_answer: data.correct_answer
+      };
+      finalMessages[finalMessages.length - 1].showExplainLink = (data.grade === 'Хорошо' || data.grade === 'Понятно');
+
+      // Если "Не понятно", сразу добавляем сообщение с правильным ответом
+      if (data.grade === 'Не понятно') {
+        finalMessages.push({
+          role: 'assistant',
+          content: data.correct_answer,
+          isEvaluation: true,
+          evalData: { grade: data.grade, correct_answer: data.correct_answer }
+        });
+      }
+
       setMessages(finalMessages);
       localStorage.setItem('translator_chat_history', JSON.stringify(finalMessages.filter(m => !m.isError && !m.isAssessment)));
     } catch (error) {
@@ -227,6 +268,35 @@ function App() {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  // Добавление/удаление сообщения с правильным ответом
+  const toggleExplanation = (userMsgIdx) => {
+    const newMessages = [...messages];
+    const userMsg = newMessages[userMsgIdx];
+    if (!userMsg.evalData) return;
+
+    const aiMsgIdx = userMsgIdx + 1;
+    const existingAiMsg = newMessages[aiMsgIdx];
+
+    // Если сообщение ИИ уже существует и содержит правильный ответ -> скрываем его
+    if (existingAiMsg && existingAiMsg.isEvaluation && existingAiMsg.content.includes("Правильный ответ:")) {
+      newMessages.splice(aiMsgIdx, 1); // Удаляем сообщение
+      userMsg.showExplainLink = true; // Возвращаем ссылку "объяснить"
+    } else {
+      // Иначе добавляем сообщение с правильным ответом
+      const newAiMessage = {
+        role: 'assistant',
+        content: userMsg.evalData.correct_answer,
+        isEvaluation: true,
+        evalData: userMsg.evalData
+      };
+      newMessages.splice(userMsgIdx + 1, 0, newAiMessage); // Вставляем после сообщения пользователя
+      userMsg.showExplainLink = false; // Прячем ссылку
+    }
+
+    setMessages(newMessages);
+    localStorage.setItem('translator_chat_history', JSON.stringify(newMessages.filter(m => !m.isError && !m.isAssessment)));
   };
 
   const handleSend = async () => {
@@ -517,7 +587,7 @@ function App() {
     setMessages(newMessages);
   };
 
-  const confirmLevel = async (msgIdx) => {
+    const confirmLevel = async (msgIdx) => {
     const assessmentMsg = messages[msgIdx];
     const levelMap = ["0", "A1", "A2", "B1", "B2", "C1", "C2"];
     const selectedLevelStr = levelMap[assessmentMsg.currentLevelIndex];
@@ -529,20 +599,59 @@ function App() {
       const headers = { 'Content-Type': 'application/json' };
       if (sessionId) headers['X-Session-Id'] = sessionId;
 
+      // 1. Сохраняем уровень на бэкенде
       await fetch(`${backendUrl}/api/set_level`, {
         method: 'POST',
         headers: headers,
         body: JSON.stringify({ level: selectedLevelStr })
       });
 
-      const newMessages = [...messages];
-      newMessages[msgIdx] = {
-        role: 'assistant',
-        content: `Переведите:\n\n${selectedText}`,
-        isLesson: true
-      };
-      setMessages(newMessages);
-      localStorage.setItem('translator_chat_history', JSON.stringify(newMessages.filter(m => !m.isError && !m.isAssessment)));
+      // 2. Если уровень "0" (Абсолютный новичок)
+      if (selectedLevelStr === "0") {
+        // Берем контекст из последнего реального перевода (перед карточкой оценки)
+        const userMsg = messages[msgIdx - 2];
+        const aiMsg = messages[msgIdx - 1];
+
+        // Превращаем карточку оценки в пустой урок (заглушку)
+        const newMessages = [...messages];
+        newMessages[msgIdx] = { role: 'assistant', content: '', isLesson: true };
+        setMessages(newMessages);
+
+        // Отправляем запрос на генерацию урока
+        const lessonResponse = await fetch(`${backendUrl}/api/lesson`, {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify({
+            user_text: userMsg?.content || "",
+            ai_text: aiMsg?.content || "",
+            use_history: false
+          })
+        });
+
+        if (!lessonResponse.ok) throw new Error('Lesson generation failed');
+        const data = await lessonResponse.json();
+
+        // Заменяем заглушку на реальный урок
+        const finalMessages = [...newMessages];
+        finalMessages[msgIdx] = {
+          role: 'assistant',
+          content: data.lesson || "Не удалось создать урок.",
+          isLesson: true
+        };
+        setMessages(finalMessages);
+        localStorage.setItem('translator_chat_history', JSON.stringify(finalMessages.filter(m => !m.isError && !m.isAssessment)));
+
+      } else {
+        // 3. Обычная логика (для уровней A1 - C2)
+        const newMessages = [...messages];
+        newMessages[msgIdx] = {
+          role: 'assistant',
+          content: `🎓Мини-урок! Переведите:\n\n${selectedText}`,
+          isLesson: true
+        };
+        setMessages(newMessages);
+        localStorage.setItem('translator_chat_history', JSON.stringify(newMessages.filter(m => !m.isError && !m.isAssessment)));
+      }
     } catch (error) {
       console.error('Error saving level:', error);
     } finally {
@@ -648,15 +757,25 @@ function App() {
                   )}
                 </div>
 
-                {msg.role === 'user' && msg.source_language && (
+                {/* Тег исходного языка */}
+                {msg.role === 'user' && msg.source_language && !msg.evaluation && (
                   <div className="source-language-tag">{msg.source_language}</div>
                 )}
 
-                {msg.role === 'assistant' && !msg.isError && !msg.isLesson && !msg.hideLesson && isLastMessage && !isLoading && (
-                  <button className="lesson-btn" onClick={() => generateLesson(idx)} disabled={isLoading}>
-                    🎓 Мини-урок
-                  </button>
+                {/* Статус проверки урока под сообщением пользователя */}
+                {msg.role === 'user' && msg.evalData && (
+                  <div className="source-language-tag eval-tag">
+                    {msg.showExplainLink && (
+                      <button className="ideal-translation-link" onClick={() => toggleExplanation(idx)}>
+                        идеальный перевод
+                      </button>
+                    )}
+                    <span>{msg.evalData.grade}</span>
+                  </div>
                 )}
+
+
+
               </div>
             );
           })}
@@ -719,17 +838,35 @@ function App() {
           )}
         </button>
 
-        <button
-          onClick={handleSend}
-          disabled={!input.trim() || isLoading}
-          className="send-btn"
-          aria-label="Отправить"
-        >
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <line x1="22" y1="2" x2="11" y2="13"></line>
-            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-          </svg>
-        </button>
+        <div className="send-wrapper">
+          {/* Обычная кнопка отправки (синяя) */}
+          <button
+            onClick={handleSend}
+            disabled={!input.trim() || isLoading}
+            className="send-btn"
+            aria-label="Отправить"
+          >
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="22" y1="2" x2="11" y2="13"></line>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+            </svg>
+          </button>
+
+          {/* Кнопка Мини-урока (появляется поверх, если поле ввода пустое) */}
+          {!input.trim() && !isLoading && messages.length > 0 && messages[messages.length - 1].role === 'assistant' && !messages[messages.length - 1].isError && !messages[messages.length - 1].isLesson && !messages[messages.length - 1].hideLesson && (
+            <button
+              className="send-btn mini-lesson-overlay"
+              onClick={() => generateLesson(messages.length - 1)}
+              aria-label="Мини-урок"
+            >
+              {/* Белая SVG-иконка graduation cap */}
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M22 10v6M2 10l10-5 10 5-10 5z"/>
+                <path d="M6 12v5c3 3 9 3 12 0v-5"/>
+              </svg>
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );
