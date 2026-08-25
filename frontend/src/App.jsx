@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import './App.css';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 function App() {
   const [messages, setMessages] = useState([]);
@@ -46,35 +48,31 @@ function App() {
           localStorage.setItem('translator_session_id', data.session_id);
           setSessionId(data.session_id);
 
-          // 1. Получаем сырую историю из базы
           const rawHistory = data.history.map(m => ({ ...m, hideLesson: !data.target_language_code }));
 
-          // 2. Обрабатываем оценки: переносим данные на сообщение пользователя, а сообщение ИИ скрываем
           for (let i = 0; i < rawHistory.length; i++) {
             if (rawHistory[i].role === 'assistant' && rawHistory[i].isEvaluation) {
               try {
                 const evalData = JSON.parse(rawHistory[i].content);
                 rawHistory[i].evalData = evalData;
 
-                if (i > 0 && rawHistory[i-1].role === 'user') {
-                  rawHistory[i-1].evalData = evalData;
-                  // Показываем ссылку "объяснить" только для Хорошо и Понятно
+                if (i > 0 && rawHistory[i - 1].role === 'user') {
+                  rawHistory[i - 1].evalData = evalData;
                   if (evalData.grade === 'Хорошо' || evalData.grade === 'Понятно') {
-                    rawHistory[i-1].showExplainLink = true;
+                    rawHistory[i - 1].showExplainLink = true;
                   }
                 }
               } catch (e) {}
             }
           }
 
-          // 3. Фильтруем: оставляем сообщение ИИ только если оценка "Не понятно"
           const visibleHistory = rawHistory.filter(m => {
             if (m.role === 'assistant' && m.isEvaluation && m.evalData) {
               if (m.evalData.grade === 'Не понятно') {
                 m.content = m.evalData.correct_answer;
-                return true; // Оставляем
+                return true;
               }
-              return false; // Скрываем все остальные оценки (Идеально, Хорошо, Понятно)
+              return false;
             }
             return true;
           });
@@ -103,33 +101,7 @@ function App() {
     }
   }, [messages, isLoading]);
 
-  useEffect(() => {
-    const handleVisibilityChange = async () => {
-      if (document.visibilityState === 'visible') {
-        if (messages.length > 0 && messages[messages.length - 1].isLesson) {
-          try {
-            const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
-            const headers = {};
-            if (sessionId) headers['X-Session-Id'] = sessionId;
-
-            await fetch(`${backendUrl}/api/abandon_lesson`, {
-              method: 'POST',
-              headers: headers
-            });
-
-            const newMessages = messages.slice(0, -1);
-            setMessages(newMessages);
-            localStorage.setItem('translator_chat_history', JSON.stringify(newMessages));
-          } catch (error) {
-            console.error('Error abandoning lesson:', error);
-          }
-        }
-      }
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [messages, sessionId]);
+  // ЛОГИКА УДАЛЕНИЯ УРОКА ПРИ ПЕРЕКЛЮЧЕНИИ ВКЛАДКИ ПОЛНОСТЬЮ УДАЛЕНА
 
   // PWA Logic
   useEffect(() => {
@@ -244,14 +216,12 @@ function App() {
 
       const finalMessages = [...messagesWithAnswer];
 
-      // Прикрепляем оценку к сообщению пользователя
       finalMessages[finalMessages.length - 1].evalData = {
         grade: data.grade,
         correct_answer: data.correct_answer
       };
       finalMessages[finalMessages.length - 1].showExplainLink = (data.grade === 'Хорошо' || data.grade === 'Понятно');
 
-      // Если "Не понятно", сразу добавляем сообщение с правильным ответом
       if (data.grade === 'Не понятно') {
         finalMessages.push({
           role: 'assistant',
@@ -270,7 +240,6 @@ function App() {
     }
   };
 
-  // Добавление/удаление сообщения с правильным ответом
   const toggleExplanation = (userMsgIdx) => {
     const newMessages = [...messages];
     const userMsg = newMessages[userMsgIdx];
@@ -279,12 +248,10 @@ function App() {
     const aiMsgIdx = userMsgIdx + 1;
     const existingAiMsg = newMessages[aiMsgIdx];
 
-    // Если сообщение ИИ уже существует и содержит правильный ответ -> скрываем его
-    if (existingAiMsg && existingAiMsg.isEvaluation && existingAiMsg.content.includes("Правильный ответ:")) {
+    if (existingAiMsg && existingAiMsg.isEvaluation && existingAiMsg.content === userMsg.evalData.correct_answer) {
       newMessages.splice(aiMsgIdx, 1); // Удаляем сообщение
       userMsg.showExplainLink = true; // Возвращаем ссылку "объяснить"
     } else {
-      // Иначе добавляем сообщение с правильным ответом
       const newAiMessage = {
         role: 'assistant',
         content: userMsg.evalData.correct_answer,
@@ -390,9 +357,10 @@ function App() {
     }
   };
 
-  const processImage = async (file) => {
+    const processImage = async (file) => {
     setIsLoading(true);
-    const userMessage = { role: 'user', content: '📷 Фото для перевода', source_language: 'Фото' };
+    // Изначально язык неизвестен
+    const userMessage = { role: 'user', content: '📷 Фото для перевода', source_language: null };
     const newMessages = [...messages, userMessage];
     setMessages(newMessages);
 
@@ -413,8 +381,18 @@ function App() {
       if (!response.ok) throw new Error('Image translation failed');
       const data = await response.json();
 
+      // Обновляем сообщение пользователя, добавляя распознанный язык
+      const finalMessages = [...newMessages];
+      if (finalMessages.length > 0 && finalMessages[finalMessages.length - 1].role === 'user') {
+        finalMessages[finalMessages.length - 1] = {
+          ...finalMessages[finalMessages.length - 1],
+          source_language: data.source_language || 'Фото'
+        };
+      }
+
       const aiMessage = { role: 'assistant', content: data.reply };
-      const finalMessages = [...newMessages, aiMessage];
+      finalMessages.push(aiMessage);
+
       setMessages(finalMessages);
       localStorage.setItem('translator_chat_history', JSON.stringify(finalMessages));
     } catch (error) {
@@ -587,7 +565,7 @@ function App() {
     setMessages(newMessages);
   };
 
-    const confirmLevel = async (msgIdx) => {
+  const confirmLevel = async (msgIdx) => {
     const assessmentMsg = messages[msgIdx];
     const levelMap = ["0", "A1", "A2", "B1", "B2", "C1", "C2"];
     const selectedLevelStr = levelMap[assessmentMsg.currentLevelIndex];
@@ -599,25 +577,20 @@ function App() {
       const headers = { 'Content-Type': 'application/json' };
       if (sessionId) headers['X-Session-Id'] = sessionId;
 
-      // 1. Сохраняем уровень на бэкенде
       await fetch(`${backendUrl}/api/set_level`, {
         method: 'POST',
         headers: headers,
         body: JSON.stringify({ level: selectedLevelStr })
       });
 
-      // 2. Если уровень "0" (Абсолютный новичок)
       if (selectedLevelStr === "0") {
-        // Берем контекст из последнего реального перевода (перед карточкой оценки)
         const userMsg = messages[msgIdx - 2];
         const aiMsg = messages[msgIdx - 1];
 
-        // Превращаем карточку оценки в пустой урок (заглушку)
         const newMessages = [...messages];
         newMessages[msgIdx] = { role: 'assistant', content: '', isLesson: true };
         setMessages(newMessages);
 
-        // Отправляем запрос на генерацию урока
         const lessonResponse = await fetch(`${backendUrl}/api/lesson`, {
           method: 'POST',
           headers: headers,
@@ -631,7 +604,6 @@ function App() {
         if (!lessonResponse.ok) throw new Error('Lesson generation failed');
         const data = await lessonResponse.json();
 
-        // Заменяем заглушку на реальный урок
         const finalMessages = [...newMessages];
         finalMessages[msgIdx] = {
           role: 'assistant',
@@ -642,7 +614,6 @@ function App() {
         localStorage.setItem('translator_chat_history', JSON.stringify(finalMessages.filter(m => !m.isError && !m.isAssessment)));
 
       } else {
-        // 3. Обычная логика (для уровней A1 - C2)
         const newMessages = [...messages];
         newMessages[msgIdx] = {
           role: 'assistant',
@@ -749,7 +720,11 @@ function App() {
                       </svg>
                     </button>
                   )}
-                  <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+              <div className="markdown-content">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {msg.content}
+                    </ReactMarkdown>
+                  </div>
                   {msg.isError && (
                     <button className="retry-btn" onClick={() => handleRetry(idx)} disabled={isLoading}>
                       Попробовать снова
@@ -758,7 +733,7 @@ function App() {
                 </div>
 
                 {/* Тег исходного языка */}
-                {msg.role === 'user' && msg.source_language && !msg.evaluation && (
+                {msg.role === 'user' && msg.source_language && !msg.evalData && (
                   <div className="source-language-tag">{msg.source_language}</div>
                 )}
 
@@ -773,8 +748,6 @@ function App() {
                     <span>{msg.evalData.grade}</span>
                   </div>
                 )}
-
-
 
               </div>
             );

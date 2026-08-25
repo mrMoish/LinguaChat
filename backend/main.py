@@ -12,8 +12,13 @@ from prompts import SETUP_SYSTEM_PROMPT, get_translation_prompt, get_lesson_prom
 import random
 from fastapi import UploadFile, File
 from pypdf import PdfReader
+from PIL import Image
+import pillow_heif
 import io
 import base64
+
+# Регистрируем плагин HEIF для Pillow
+pillow_heif.register_heif_opener()
 
 load_dotenv()
 
@@ -651,28 +656,47 @@ async def image_translate(file: UploadFile = File(...), req: Request = None):
     session_id_str = get_session_id(req)
     session_id = uuid.UUID(session_id_str)
 
-    # Получаем язык пользователя
-    # target_lang_name = "Русский"
-    # if db_pool:
-    #     async with db_pool.acquire() as conn:
-    #         row = await conn.fetchrow("SELECT target_language_name FROM user_settings WHERE session_id = $1", session_id)
-    #         if row:
-    #             target_lang_name = row["target_language_name"]
-
-    # 1. Читаем изображение и кодируем в Base64
+    # 1. Читаем изображение и КОНВЕРТИРУЕМ В JPEG (чтобы избежать ошибок формата HEIC и др.)
     contents = await file.read()
-    base64_image = base64.b64encode(contents).decode('utf-8')
-    mime_type = file.content_type or 'image/jpeg'
+
+    try:
+        # Открываем изображение через Pillow
+        img = Image.open(io.BytesIO(contents))
+        # Конвертируем в RGB (убираем альфа-канал, который не поддерживает JPEG)
+        img = img.convert('RGB')
+
+        # Сохраняем в буфер памяти как настоящий JPEG
+        buffer = io.BytesIO()
+        img.save(buffer, format='JPEG', quality=85)
+        jpeg_bytes = buffer.getvalue()
+
+        # Кодируем уже сконвертированный JPEG в Base64
+        base64_image = base64.b64encode(jpeg_bytes).decode('utf-8')
+    except Exception as img_err:
+        print(f"Image conversion error: {img_err}")
+        # Если вдруг Pillow не смог открыть файл,Fallback на оригинальные байты
+        base64_image = base64.b64encode(contents).decode('utf-8')
+
+    # Теперь мы точно знаем, что это валидный JPEG
+    mime_type = 'image/jpeg'
     data_uri = f"data:{mime_type};base64,{base64_image}"
 
-    # 2. Формируем промпт для распознавания и перевода
-    prompt_text = f"""You are a professional OCR tool and translator. Extract all visible text from the image.
-    Translate it to Russian.
-    Output strictly only the translated text without any comments, markdown, or quotes. If there is no text, reply with "На изображении нет текста"."""
+    # 2. Формируем промпт
+    prompt_text = """Проанализируй изображение. Что это?
+Переведи необрезанный текст на русский язык.
+Объедини описание изображения и переведённый текст в одно поле "reply".
+Используй Markdown-форматирование внутри поля "reply" для лучшей читаемости.
+Определи язык текста на изображении (на русском языке, например: "Английский", "Французский"). Если текста нет, используй "Нет текста".
+Верни СТРОГО JSON без markdown:
+{
+  "source_language_name": "Название языка на русском",
+  "reply": "Описание изображения и переведённый текст"
+}"""
 
     headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
     payload = {
-        "model": AUDIO_MODEL_NAME, # Используем ту же модель (gemini-2.5-flash-lite), она отлично читает текст
+        # ИЗМЕНЕНО: Правильное название модели для OpenRouter
+        "model": "openai/gpt-4o-mini-2024-07-18",
         "messages": [
             {
                 "role": "user",
@@ -681,35 +705,58 @@ async def image_translate(file: UploadFile = File(...), req: Request = None):
                     {"type": "image_url", "image_url": {"url": data_uri}}
                 ]
             }
-        ]
+        ],
+        "response_format": {"type": "json_object"}
     }
 
     try:
         # 3. Отправляем запрос в OpenRouter
         async with httpx.AsyncClient() as client:
-            response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=60.0)
-            response.raise_for_status()
+            response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload,
+                                         timeout=60.0)
+
+            # ЕСЛИ OPENROUTER ВЕРНУЛ ОШИБКУ (4xx или 5xx)
+            if response.status_code != 200:
+                error_text = response.text
+                print(f"--- OpenRouter Image Error ---\n{error_text}\n-----------------------------")
+                raise HTTPException(status_code=response.status_code, detail=f"OpenRouter API Error: {error_text}")
+
             data = response.json()
-            ai_reply = data["choices"][0]["message"]["content"].strip()
+            raw_text = data["choices"][0]["message"]["content"].strip()
+
+            # Парсим JSON
+            try:
+                parsed = json.loads(raw_text)
+                ai_reply = parsed.get("reply", "Ошибка обработки ответа.")
+                source_lang = parsed.get("source_language_name", "Фото")
+            except json.JSONDecodeError:
+                # Если ИИ забыл про JSON, используем сырой текст
+                ai_reply = raw_text
+                source_lang = "Фото"
 
         # 4. Сохраняем в историю чата
         if db_pool:
-            async with db_pool.acquire() as conn:
-                await conn.execute(
-                    "INSERT INTO chat_history (session_id, role, content, source_language) VALUES ($1, $2, $3, $4)",
-                    session_id, "user", "📷 Фото для перевода", "image"
-                )
-                await conn.execute(
-                    "INSERT INTO chat_history (session_id, role, content) VALUES ($1, $2, $3)",
-                    session_id, "assistant", ai_reply
-                )
+            try:
+                async with db_pool.acquire() as conn:
+                    await conn.execute(
+                        "INSERT INTO chat_history (session_id, role, content, source_language) VALUES ($1, $2, $3, $4)",
+                        session_id, "user", "📷 Фото для перевода", source_lang
+                    )
+                    await conn.execute(
+                        "INSERT INTO chat_history (session_id, role, content) VALUES ($1, $2, $3)",
+                        session_id, "assistant", ai_reply
+                    )
+            except Exception as db_err:
+                print(f"Database connection failed: {db_err}")
 
-        return {"reply": ai_reply, "source_language": "Фото"}
+        # Возвращаем ответ и язык на фронтенд
+        return {"reply": ai_reply, "source_language": source_lang}
 
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Image Processing Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/")
 def read_root():
