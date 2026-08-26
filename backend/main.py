@@ -17,7 +17,7 @@ import pillow_heif
 import io
 import base64
 
-# Регистрируем плагин HEIF для Pillow
+# Регистрируем плагин HEIF для Pillow(конвертация)
 pillow_heif.register_heif_opener()
 
 load_dotenv()
@@ -35,7 +35,7 @@ app.add_middleware(
 )
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-MODEL_NAME = "deepseek/deepseek-chat"
+MODEL_NAME = "dots-studio/dots-3-note-preview:free"
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 db_pool = None
@@ -559,7 +559,7 @@ async def abandon_lesson(req: Request):
 
 # Модель, поддерживающая аудио (DeepSeek этого не умеет)
 # Исправленное название модели (на OpenRouter она называется так)
-AUDIO_MODEL_NAME = "gemini-2.5-flash"
+AUDIO_MODEL_NAME = "google/gemini-2.5-flash-lite"
 
 
 @app.post("/api/audio_translate")
@@ -696,7 +696,7 @@ async def image_translate(file: UploadFile = File(...), req: Request = None):
     headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
     payload = {
         # ИЗМЕНЕНО: Правильное название модели для OpenRouter
-        "model": "openai/gpt-5.6-luna",
+        "model": "dots-studio/dots-3-note-preview:free",
         "messages": [
             {
                 "role": "user",

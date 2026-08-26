@@ -141,14 +141,6 @@ body::-webkit-scrollbar-thumb:hover {
 
 .empty-state-app .input-area { position: relative; }
 
-.chat-active-app .input-area {
-  position: fixed;
-  bottom: 0;
-  left: 50%;
-  transform: translateX(-50%);
-  max-width: 768px;
-  box-shadow: none;
-}
 
 .input-area textarea {
   flex: 1;
@@ -163,7 +155,10 @@ body::-webkit-scrollbar-thumb:hover {
   line-height: 1.4;
   min-height: 48px;
   background-color: var(--bg-color);
+  /* Усилили тень: больше размытие и больше непрозрачность */
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
 }
+
 
 .input-area .action-btn,
 .input-area .send-btn {
@@ -177,8 +172,10 @@ body::-webkit-scrollbar-thumb:hover {
   border: none;
   border-radius: 50%;
   cursor: pointer;
-  transition: background 0.2s, transform 0.1s;
+  transition: background 0.2s, transform 0.1s, box-shadow 0.2s;
   flex-shrink: 0;
+  /* Усилили тень */
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.25);
 }
 
 .input-area .action-btn {
@@ -549,8 +546,8 @@ body::-webkit-scrollbar-thumb:hover {
   left: 0;
   width: 100%;
   height: 100%;
-  background-color: #34c759; /* Яркий зеленый цвет */
-  color: #ffffff; /* Белый силуэт иконки */
+  background-color: #FF9500;
+  color: #ffffff;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -559,11 +556,13 @@ body::-webkit-scrollbar-thumb:hover {
   cursor: pointer;
   transition: background 0.2s, transform 0.1s;
   z-index: 10;
+  /* Усилили оранжевую тень */
+  box-shadow: 0 6px 18px rgba(255, 149, 0, 0.6);
+}
+.send-btn.mini-lesson-overlay:hover {
+  background-color: #E68A00; /* Темно-оранжевый при наведении */
 }
 
-.send-btn.mini-lesson-overlay:hover {
-  background-color: #28a745; /* Темно-зеленый при наведении */
-}
 
 /* Ссылка "идеальный перевод" (выглядит как обычный текст с подчеркиванием) */
 .ideal-translation-link {
@@ -645,4 +644,18 @@ body::-webkit-scrollbar-thumb:hover {
   padding-left: 1rem;
   margin: 0.5rem 0;
   color: #555;
+}
+
+.chat-active-app .input-area {
+  position: fixed;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 768px;
+  width: 100%;
+  box-shadow: none;
+  background-color: transparent;
+  /* Добавили env(safe-area-inset-bottom) для нижнего отступа */
+  padding: 1rem 1rem calc(2rem + env(safe-area-inset-bottom));
+  z-index: 20;
 }
