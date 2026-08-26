@@ -683,7 +683,7 @@ async def image_translate(file: UploadFile = File(...), req: Request = None):
 
     # 2. Формируем промпт
     prompt_text = """Проанализируй изображение. Что это?
-Переведи необрезанный текст на русский язык.
+Переведи весь текст на русский язык.
 Объедини описание изображения и переведённый текст в одно поле "reply".
 Используй Markdown-форматирование внутри поля "reply" для лучшей читаемости.
 Определи язык текста на изображении (на русском языке, например: "Английский", "Французский"). Если текста нет, используй "Нет текста".
@@ -696,7 +696,7 @@ async def image_translate(file: UploadFile = File(...), req: Request = None):
     headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
     payload = {
         # ИЗМЕНЕНО: Правильное название модели для OpenRouter
-        "model": "openai/gpt-4o-mini-2024-07-18",
+        "model": "openai/gpt-5.6-luna",
         "messages": [
             {
                 "role": "user",
