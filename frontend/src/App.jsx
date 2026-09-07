@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
-import './App.css';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import './App.css';
 
 function App() {
   const [messages, setMessages] = useState([]);
@@ -22,6 +22,24 @@ function App() {
 
   // Файлы
   const fileInputRef = useRef(null);
+
+  // Вспомогательная функция для форматирования ответа ИИ (массив или строка)
+  const formatCorrectAnswer = (correctAns, explanation) => {
+    if (Array.isArray(correctAns) && correctAns.length > 0) {
+      if (Array.isArray(correctAns[0])) {
+        // Массив массивов: [["Hello", "хэлОу"], ["World", "вОрлд"]]
+        const header = correctAns.map(item => item[1]).join(' | ');
+        const separator = correctAns.map(() => '---').join(' | ');
+        const words = correctAns.map(item => `**${item[0]}**`).join(' | ');
+        return `${header}\n${separator}\n${words}\n\n${explanation || ''}`;
+      } else if (correctAns.length === 3 && typeof correctAns[0] === 'string') {
+        // Простой массив: ["Hello World", "хэлоу ворлд", "Привет, мир"]
+        return `**${correctAns[0]}**\n[${correctAns[1]}]\n${correctAns[2]}`;
+      }
+    }
+    // Обычная строка
+    return `**${correctAns}**\n\n${explanation || ''}`;
+  };
 
   useEffect(() => {
     const initChat = async () => {
@@ -58,7 +76,7 @@ function App() {
 
                 if (i > 0 && rawHistory[i - 1].role === 'user') {
                   rawHistory[i - 1].evalData = evalData;
-                  if (evalData.grade === 'Хорошо' || evalData.grade === 'Понятно') {
+                  if (evalData.grade === 'Хорошо') {
                     rawHistory[i - 1].showExplainLink = true;
                   }
                 }
@@ -69,7 +87,7 @@ function App() {
           const visibleHistory = rawHistory.filter(m => {
             if (m.role === 'assistant' && m.isEvaluation && m.evalData) {
               if (m.evalData.grade === 'Не понятно') {
-                m.content = m.evalData.correct_answer;
+                m.content = formatCorrectAnswer(m.evalData.correct_answer, m.evalData.explanation);
                 return true;
               }
               return false;
@@ -100,8 +118,6 @@ function App() {
       return () => clearTimeout(timer);
     }
   }, [messages, isLoading]);
-
-  // ЛОГИКА УДАЛЕНИЯ УРОКА ПРИ ПЕРЕКЛЮЧЕНИИ ВКЛАДКИ ПОЛНОСТЬЮ УДАЛЕНА
 
   // PWA Logic
   useEffect(() => {
@@ -162,10 +178,14 @@ function App() {
 
       const finalMessages = [...messagesState];
       const lastIdx = finalMessages.length - 1;
+
+      // Обновляем сообщение пользователя, добавляя язык, коррекцию и перевод
       if (lastIdx >= 0 && finalMessages[lastIdx].role === 'user') {
         finalMessages[lastIdx] = {
           ...finalMessages[lastIdx],
-          source_language: data.source_language || null
+          source_language: data.source_language || null,
+          correction: data.correction || [],
+          translation: data.translation || ''
         };
       }
 
@@ -218,16 +238,24 @@ function App() {
 
       finalMessages[finalMessages.length - 1].evalData = {
         grade: data.grade,
-        correct_answer: data.correct_answer
+        correct_answer: data.correct_answer,
+        explanation: data.explanation
       };
-      finalMessages[finalMessages.length - 1].showExplainLink = (data.grade === 'Хорошо' || data.grade === 'Понятно');
+
+      finalMessages[finalMessages.length - 1].showExplainLink = (data.grade === 'Хорошо');
 
       if (data.grade === 'Не понятно') {
+        const formattedAns = formatCorrectAnswer(data.correct_answer, data.explanation);
+
         finalMessages.push({
           role: 'assistant',
-          content: data.correct_answer,
+          content: formattedAns,
           isEvaluation: true,
-          evalData: { grade: data.grade, correct_answer: data.correct_answer }
+          evalData: {
+            grade: data.grade,
+            correct_answer: data.correct_answer,
+            explanation: data.explanation
+          }
         });
       }
 
@@ -245,21 +273,25 @@ function App() {
     const userMsg = newMessages[userMsgIdx];
     if (!userMsg.evalData) return;
 
+    const correctAns = userMsg.evalData.correct_answer;
+    const explanation = userMsg.evalData.explanation;
+    const formattedAns = formatCorrectAnswer(correctAns, explanation);
+
     const aiMsgIdx = userMsgIdx + 1;
     const existingAiMsg = newMessages[aiMsgIdx];
 
-    if (existingAiMsg && existingAiMsg.isEvaluation && existingAiMsg.content === userMsg.evalData.correct_answer) {
-      newMessages.splice(aiMsgIdx, 1); // Удаляем сообщение
-      userMsg.showExplainLink = true; // Возвращаем ссылку "объяснить"
+    if (existingAiMsg && existingAiMsg.isEvaluation && existingAiMsg.content === formattedAns) {
+      newMessages.splice(aiMsgIdx, 1);
+      userMsg.showExplainLink = true;
     } else {
       const newAiMessage = {
         role: 'assistant',
-        content: userMsg.evalData.correct_answer,
+        content: formattedAns,
         isEvaluation: true,
         evalData: userMsg.evalData
       };
-      newMessages.splice(userMsgIdx + 1, 0, newAiMessage); // Вставляем после сообщения пользователя
-      userMsg.showExplainLink = false; // Прячем ссылку
+      newMessages.splice(userMsgIdx + 1, 0, newAiMessage);
+      userMsg.showExplainLink = false;
     }
 
     setMessages(newMessages);
@@ -357,9 +389,8 @@ function App() {
     }
   };
 
-    const processImage = async (file) => {
+  const processImage = async (file) => {
     setIsLoading(true);
-    // Изначально язык неизвестен
     const userMessage = { role: 'user', content: '📷 Фото для перевода', source_language: null };
     const newMessages = [...messages, userMessage];
     setMessages(newMessages);
@@ -381,7 +412,6 @@ function App() {
       if (!response.ok) throw new Error('Image translation failed');
       const data = await response.json();
 
-      // Обновляем сообщение пользователя, добавляя распознанный язык
       const finalMessages = [...newMessages];
       if (finalMessages.length > 0 && finalMessages[finalMessages.length - 1].role === 'user') {
         finalMessages[finalMessages.length - 1] = {
@@ -392,7 +422,6 @@ function App() {
 
       const aiMessage = { role: 'assistant', content: data.reply };
       finalMessages.push(aiMessage);
-
       setMessages(finalMessages);
       localStorage.setItem('translator_chat_history', JSON.stringify(finalMessages));
     } catch (error) {
@@ -458,7 +487,8 @@ function App() {
   const sendAudioToServer = async (blob) => {
     setIsLoading(true);
 
-    const userMessage = { role: 'user', content: '🎤 Голосовое сообщение', source_language: 'Голос' };
+    // Временно показываем заглушку, пока ИИ расшифровывает голос
+    const userMessage = { role: 'user', content: '🎤 Распознавание голоса...', source_language: 'Голос' };
     const newMessages = [...messages, userMessage];
     setMessages(newMessages);
 
@@ -479,8 +509,21 @@ function App() {
       if (!response.ok) throw new Error('Audio translation failed');
       const data = await response.json();
 
+      const finalMessages = [...newMessages];
+
+      // Заменяем заглушку на реальный распознанный текст и прикрепляем коррекцию
+      if (finalMessages.length > 0 && finalMessages[finalMessages.length - 1].role === 'user') {
+        finalMessages[finalMessages.length - 1] = {
+          ...finalMessages[finalMessages.length - 1],
+          content: data.transcribed_text || "🎤 Голосовое сообщение",
+          source_language: data.source_language || 'Голос',
+          correction: data.correction || [],
+          translation: data.translation || ''
+        };
+      }
+
       const aiMessage = { role: 'assistant', content: data.reply };
-      const finalMessages = [...newMessages, aiMessage];
+      finalMessages.push(aiMessage);
       setMessages(finalMessages);
       localStorage.setItem('translator_chat_history', JSON.stringify(finalMessages));
     } catch (error) {
@@ -507,14 +550,8 @@ function App() {
     await sendRequest(errorMsgObj.originalText, messagesWithoutError);
   };
 
-  const generateLesson = async (idx) => {
+  const generateLesson = async () => {
     if (isLoading) return;
-
-    const userMsg = messages[idx - 1];
-    const aiMsg = messages[idx];
-    if (!aiMsg || aiMsg.role !== 'assistant') return;
-
-    const useHistory = aiMsg.isEvaluation || false;
 
     setIsLoading(true);
 
@@ -526,11 +563,7 @@ function App() {
       const response = await fetch(`${backendUrl}/api/lesson`, {
         method: 'POST',
         headers: headers,
-        body: JSON.stringify({
-          user_text: userMsg?.content || "",
-          ai_text: aiMsg.content,
-          use_history: useHistory
-        })
+        body: JSON.stringify({ user_text: "", ai_text: "" })
       });
 
       if (!response.ok) throw new Error('Network response was not ok');
@@ -720,11 +753,13 @@ function App() {
                       </svg>
                     </button>
                   )}
-              <div className="markdown-content">
+
+                  <div className="markdown-content">
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                      {msg.content}
+                      {msg.content || ''}
                     </ReactMarkdown>
                   </div>
+
                   {msg.isError && (
                     <button className="retry-btn" onClick={() => handleRetry(idx)} disabled={isLoading}>
                       Попробовать снова
@@ -733,8 +768,19 @@ function App() {
                 </div>
 
                 {/* Тег исходного языка */}
-                {msg.role === 'user' && msg.source_language && !msg.evalData && (
+                {msg.role === 'user' && msg.source_language && !msg.evalData && !msg.correction?.length && (
                   <div className="source-language-tag">{msg.source_language}</div>
+                )}
+
+                {/* Блок исправлений и перевода для обычного чата */}
+                {msg.role === 'user' && msg.correction && msg.correction.length > 0 && (
+                  <div className="correction-block">
+                    <div className="markdown-content">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {formatCorrectAnswer(msg.correction, msg.translation)}
+                      </ReactMarkdown>
+                    </div>
+                  </div>
                 )}
 
                 {/* Статус проверки урока под сообщением пользователя */}
@@ -777,7 +823,6 @@ function App() {
           </svg>
         </button>
 
-        {/* Единый скрытый инпут для Фото и PDF */}
         <input
           type="file"
           accept="image/*,application/pdf"
@@ -812,7 +857,6 @@ function App() {
         </button>
 
         <div className="send-wrapper">
-          {/* Обычная кнопка отправки (синяя) */}
           <button
             onClick={handleSend}
             disabled={!input.trim() || isLoading}
@@ -825,29 +869,18 @@ function App() {
             </svg>
           </button>
 
-          {/* Кнопка Мини-урока (появляется поверх, если поле ввода пустое) */}
-          {!input.trim() && !isLoading && messages.length > 0 && messages[messages.length - 1].role === 'assistant' && !messages[messages.length - 1].isError && !messages[messages.length - 1].isLesson && !messages[messages.length - 1].hideLesson && (
+          {!input.trim() && !isLoading && (
             <button
               className="send-btn mini-lesson-overlay"
-              onClick={() => generateLesson(messages.length - 1)}
+              onClick={() => generateLesson()}
               aria-label="Мини-урок"
             >
-              {/* Иконка трех звезд разного размера */}
               <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
-                {/* Большая центральная звезда (уменьшили масштаб) */}
                 <path d="M 0,-10 L 2.94,-4.05 L 9.51,-3.09 L 4.76,1.55 L 5.88,8.09 L 0,5 L -5.88,8.09 L -4.76,1.55 L -9.51,-3.09 L -2.94,-4.05 Z" transform="translate(12, 12) scale(0.75)"/>
-
-                {/* Средняя звезда (нижняя левая - отодвинули дальше) */}
-                <path d="M 0,-10 L 2.94,-4.05 L 9.51,-3.09 L 4.76,1.55 L 5.88,8.09 L 0,5 L -5.88,8.09 L -4.76,1.55 L -9.51,-3.09 L -2.94,-4.05 Z" transform="translate(4, 20) scale(0.35)"/>
-
-                {/* Маленькая звезда (верхняя правая - отодвинули дальше) */}
-                <path d="M 0,-10 L 2.94,-4.05 L 9.51,-3.09 L 4.76,1.55 L 5.88,8.09 L 0,5 L -5.88,8.09 L -4.76,1.55 L -9.51,-3.09 L -2.94,-4.05 Z" transform="translate(20, 4) scale(0.3)"/>
-
-                {/* Маленькая звезда (нижняя правая - отодвинули дальше) */}
-                <path d="M 0,-10 L 2.94,-4.05 L 9.51,-3.09 L 4.76,1.55 L 5.88,8.09 L 0,5 L -5.88,8.09 L -4.76,1.55 L -9.51,-3.09 L -2.94,-4.05 Z" transform="translate(20, 20) scale(0.25)"/>
-
-                {/* Маленькая звезда (верхняя левая - отодвинули дальше) */}
-                <path d="M 0,-10 L 2.94,-4.05 L 9.51,-3.09 L 4.76,1.55 L 5.88,8.09 L 0,5 L -5.88,8.09 L -4.76,1.55 L -9.51,-3.09 L -2.94,-4.05 Z" transform="translate(4, 4) scale(0.28)"/>
+                <path d="M 0,-10 L 2.94,-4.05 L 9.51,-3.09 L 4.76,1.55 L 5.88,8.09 L 0,5 L -5.88,8.09 L -4.76,1.55 L -9.51,-3.09 L -2.94,-4.05 Z" transform="translate(3, 21) scale(0.3)"/>
+                <path d="M 0,-10 L 2.94,-4.05 L 9.51,-3.09 L 4.76,1.55 L 5.88,8.09 L 0,5 L -5.88,8.09 L -4.76,1.55 L -9.51,-3.09 L -2.94,-4.05 Z" transform="translate(21, 3) scale(0.28)"/>
+                <path d="M 0,-10 L 2.94,-4.05 L 9.51,-3.09 L 4.76,1.55 L 5.88,8.09 L 0,5 L -5.88,8.09 L -4.76,1.55 L -9.51,-3.09 L -2.94,-4.05 Z" transform="translate(21, 21) scale(0.25)"/>
+                <path d="M 0,-10 L 2.94,-4.05 L 9.51,-3.09 L 4.76,1.55 L 5.88,8.09 L 0,5 L -5.88,8.09 L -4.76,1.55 L -9.51,-3.09 L -2.94,-4.05 Z" transform="translate(3, 3) scale(0.27)"/>
               </svg>
             </button>
           )}

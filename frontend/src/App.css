@@ -659,3 +659,75 @@ body::-webkit-scrollbar-thumb:hover {
   padding: 1rem 1rem calc(2rem + env(safe-area-inset-bottom));
   z-index: 20;
 }
+
+/* Стили для таблицы произношения в Markdown */
+.markdown-content table {
+  display: inline-table;
+  width: auto;
+  border-collapse: collapse;
+  margin-bottom: 8px;
+  margin-top: 4px;
+}
+
+.markdown-content thead th {
+  color: #bbb; /* Более незаметный серый цвет для произношения */
+  font-weight: normal;
+  font-size: 0.75rem;
+  border: none;
+  padding: 2px 10px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.markdown-content tbody td {
+  border: none;
+  padding: 2px 10px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+/* Блок исправлений и перевода под сообщением пользователя */
+.correction-block {
+  max-width: 85%;
+  margin-top: 6px;
+  padding: 8px 12px;
+  background-color: #fff0f0;
+  border: 1px solid #ffcdd2;
+  border-radius: 12px;
+  border-bottom-right-radius: 4px;
+  font-size: 0.85rem;
+  color: #d32f2f;
+  line-height: 1.5;
+  white-space: normal;
+  overflow-x: auto;
+}
+
+.correction-block .markdown-content {
+  color: #d32f2f;
+}
+
+.correction-block table {
+  display: inline-table;
+  width: auto;
+  border-collapse: collapse;
+  margin-bottom: 6px;
+}
+
+.correction-block thead th {
+  color: #b71c1c; /* Темно-красный для произношения */
+  font-weight: normal;
+  font-size: 0.75rem;
+  border: none;
+  padding: 2px 8px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.correction-block tbody td {
+  border: none;
+  padding: 2px 8px;
+  text-align: center;
+  font-weight: 600;
+  color: #333; /* Черный для самих слов */
+  white-space: nowrap;
+}

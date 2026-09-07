@@ -1,58 +1,70 @@
 import os
 import uuid
 import json
-from fastapi import FastAPI, HTTPException, Request, Response
+import io
+import base64
+from typing import Optional
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import httpx
 import asyncpg
 from dotenv import load_dotenv
-from prompts import SETUP_SYSTEM_PROMPT, get_translation_prompt, get_lesson_prompt, get_assessment_prompt, get_single_word_prompt, get_lesson_evaluation_prompt, get_lesson_from_history_prompt, get_translation_pdf_prompt
-import random
-from fastapi import UploadFile, File
-from pypdf import PdfReader
 from PIL import Image
 import pillow_heif
-import io
-import base64
+from pypdf import PdfReader
 
-# Регистрируем плагин HEIF для Pillow(конвертация)
-pillow_heif.register_heif_opener()
+# Импорты промптов
+from prompts import (
+    SETUP_SYSTEM_PROMPT,
+    get_translation_prompt,
+    get_lesson_prompt,
+    get_lesson_from_history_prompt,
+    get_assessment_prompt,
+    get_single_word_prompt,
+    get_lesson_evaluation_prompt
+)
+import random
 
 load_dotenv()
+
+# Регистрируем плагин HEIF для Pillow (чтобы открывать фото с iPhone)
+pillow_heif.register_heif_opener()
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://trachat.vercel.app",
-                   "https://linguachat-x26d.onrender.com",
-                   "http://localhost:5173",
-                   "http://127.0.0.1:5173"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "https://trachat.vercel.app",
+        "https://linguachat-x26d.onrender.com"
+    ],
     allow_methods=["*"],
     allow_headers=["*", "X-Session-Id"],
 )
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-MODEL_NAME = "dots-studio/dots-3-note-preview:free"
+MODEL_NAME = "deepseek/deepseek-chat"
+AUDIO_MODEL_NAME = "google/gemini-2.5-flash-lite"  # Модель для аудио и фото
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 db_pool = None
+
 
 @app.on_event("startup")
 async def startup():
     global db_pool
     if DATABASE_URL:
         try:
-            # Обновленная строка создания пула
             db_pool = await asyncpg.create_pool(
                 DATABASE_URL,
                 min_size=1,
                 max_size=5,
-                timeout=30,
+                timeout=60,
                 command_timeout=60,
-                max_inactive_connection_lifetime=60 # FIX: это сделано так как render sql бесплатный тариф, при платном тарифе для оптимизации наверное нужно убрать; Закрываем простаивающие соединения до того, как это сделает Render
+                max_inactive_connection_lifetime=60
             )
             async with db_pool.acquire() as conn:
                 await conn.execute('''
@@ -64,7 +76,35 @@ async def startup():
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                     )
                 ''')
-                # НОВАЯ ТАБЛИЦА ДЛЯ ОРИГИНАЛЬНЫХ ТЕКСТОВ PDF
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS user_settings (
+                        session_id UUID PRIMARY KEY,
+                        target_language_code VARCHAR(10),
+                        target_language_name VARCHAR(100)
+                    )
+                ''')
+                await conn.execute(
+                    "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS proficiency_level INTEGER DEFAULT 0")
+                await conn.execute("ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS is_lesson BOOLEAN DEFAULT FALSE")
+                await conn.execute(
+                    "ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS is_evaluation BOOLEAN DEFAULT FALSE")
+                await conn.execute("ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS source_language VARCHAR(50)")
+
+                # Колонка для общей суммы трат пользователя
+                await conn.execute(
+                    "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS total_cost NUMERIC(10, 5) DEFAULT 0.0")
+
+                # Таблица для логов брошенных уроков
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS lesson_logs (
+                        id SERIAL PRIMARY KEY,
+                        session_id UUID NOT NULL,
+                        content TEXT NOT NULL,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+
+                # Таблица для оригинальных текстов PDF
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS documents (
                         id SERIAL PRIMARY KEY,
@@ -74,27 +114,17 @@ async def startup():
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                     )
                 ''')
-                await conn.execute('''
-                    CREATE TABLE IF NOT EXISTS user_settings (
-                        session_id UUID PRIMARY KEY,
-                        target_language_code VARCHAR(10),
-                        target_language_name VARCHAR(100)
-                    )
-                ''')
-                await conn.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS proficiency_level INTEGER DEFAULT 0")
-                await conn.execute("ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS is_lesson BOOLEAN DEFAULT FALSE")
-                await conn.execute("ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS source_language VARCHAR(50)")
-                await conn.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS proficiency_level INTEGER")
-                await conn.execute("ALTER TABLE user_settings ALTER COLUMN proficiency_level DROP NOT NULL")
-                await conn.execute("ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS is_evaluation BOOLEAN DEFAULT FALSE")
 
-
-                # НОВАЯ ТАБЛИЦА ДЛЯ ЛОГОВ УРОКОВ
+                # Таблица для детальной статистики API запросов
                 await conn.execute('''
-                    CREATE TABLE IF NOT EXISTS lesson_logs (
+                    CREATE TABLE IF NOT EXISTS api_usage_logs (
                         id SERIAL PRIMARY KEY,
                         session_id UUID NOT NULL,
-                        content TEXT NOT NULL,
+                        endpoint VARCHAR(50) NOT NULL,
+                        prompt_tokens INTEGER DEFAULT 0,
+                        completion_tokens INTEGER DEFAULT 0,
+                        total_tokens INTEGER DEFAULT 0,
+                        cost NUMERIC(10, 5) DEFAULT 0.0,
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                     )
                 ''')
@@ -103,25 +133,59 @@ async def startup():
     else:
         print("ВНИМАНИЕ: DATABASE_URL не задан!")
 
+
 @app.on_event("shutdown")
 async def shutdown():
     if db_pool:
         await db_pool.close()
 
+
+# --- МОДЕЛИ PYDANTIC ---
 class ChatRequest(BaseModel):
     message: str
 
+
 class LessonRequest(BaseModel):
-    user_text: str
-    ai_text: str
+    user_text: Optional[str] = None
+    ai_text: Optional[str] = None
     use_history: bool = False
 
+
+class CheckLessonRequest(BaseModel):
+    lesson_text: str
+    user_answer: str
+
+
+class SetLevelRequest(BaseModel):
+    level: str
+
+
+# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 def get_session_id(req: Request):
     session_id_str = req.headers.get("X-Session-Id")
     if not session_id_str:
         session_id_str = str(uuid.uuid4())
     return session_id_str
 
+
+async def log_api_usage(conn, session_id, endpoint, usage_data):
+    if not usage_data: return
+    prompt_tokens = usage_data.get("prompt_tokens", 0)
+    completion_tokens = usage_data.get("completion_tokens", 0)
+    total_tokens = usage_data.get("total_tokens", 0)
+    cost = usage_data.get("cost", 0.0)
+
+    await conn.execute(
+        "INSERT INTO api_usage_logs (session_id, endpoint, prompt_tokens, completion_tokens, total_tokens, cost) VALUES ($1, $2, $3, $4, $5, $6)",
+        session_id, endpoint, prompt_tokens, completion_tokens, total_tokens, cost
+    )
+    await conn.execute(
+        "UPDATE user_settings SET total_cost = total_cost + $1 WHERE session_id = $2",
+        cost, session_id
+    )
+
+
+# --- ЭНДПОИНТЫ ---
 
 @app.get("/api/history")
 async def get_history(req: Request):
@@ -131,29 +195,23 @@ async def get_history(req: Request):
     target_lang_code = None
     if db_pool:
         async with db_pool.acquire() as conn:
-            # Проверяем, выбран ли язык
             row_settings = await conn.fetchrow("SELECT target_language_code FROM user_settings WHERE session_id = $1",
                                                session_id)
             if row_settings:
                 target_lang_code = row_settings["target_language_code"]
 
-            # 1. Проверяем последнее сообщение в истории
+            # Проверяем последнее сообщение (если это урок - переносим в логи)
             last_row = await conn.fetchrow(
                 "SELECT id, is_lesson, content FROM chat_history WHERE session_id = $1 ORDER BY created_at DESC LIMIT 1",
                 session_id
             )
-
-            # Если последнее сообщение — это урок, значит пользователь на него не ответил (урок "висит").
-            # Удаляем его из чата, чтобы он пропал при обновлении страницы.
             if last_row and last_row["is_lesson"]:
                 await conn.execute("DELETE FROM chat_history WHERE id = $1", last_row["id"])
-                # СОХРАНЯЕМ В ЛОГИ УРОКОВ (для статистики)
                 await conn.execute(
                     "INSERT INTO lesson_logs (session_id, content) VALUES ($1, $2)",
                     session_id, last_row["content"]
                 )
 
-            # 2. Достаем очищенную историю
             rows = await conn.fetch(
                 "SELECT role, content, is_lesson, is_evaluation, source_language FROM chat_history WHERE session_id = $1 ORDER BY created_at ASC",
                 session_id
@@ -184,11 +242,21 @@ async def chat(request: ChatRequest, req: Request):
     if db_pool:
         async with db_pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT target_language_code, target_language_name FROM user_settings WHERE session_id = $1",
+                "SELECT target_language_code, target_language_name, total_cost FROM user_settings WHERE session_id = $1",
                 session_id)
             if row:
                 target_lang_code = row["target_language_code"]
                 target_lang_name = row["target_language_name"]
+
+                # Проверка лимита средств (1$)
+                if row["total_cost"] is not None and row["total_cost"] >= 1.0:
+                    spent = round(row["total_cost"], 2)
+                    return {
+                        "session_id": session_id_str,
+                        "reply": f"Вы исчерпали лимит бесплатных запросов, потратив ${spent}. Чтобы продолжить пользоваться переводчиком, купите подписку через техподдержку.",
+                        "source_language": "Система",
+                        "target_language_code": target_lang_code
+                    }
 
     if not target_lang_code:
         messages = [
@@ -196,16 +264,12 @@ async def chat(request: ChatRequest, req: Request):
             {"role": "user", "content": request.message}
         ]
     else:
-        # --- РЕЖИМ 2: Строгий перевод ---
-        # Проверяем, состоит ли сообщение из одного слова (убираем пробелы и знаки препинания)
         cleaned_message = request.message.strip().replace('.', '').replace(',', '').replace('!', '').replace('?', '')
         is_single_word = len(cleaned_message.split()) == 1
 
         if is_single_word:
-            # Промпт для одного слова (словарь)
             system_content = get_single_word_prompt(target_lang_name, target_lang_code)
         else:
-            # Обычный промпт для предложений
             system_content = get_translation_prompt(target_lang_name, target_lang_code)
 
         messages = [
@@ -226,6 +290,7 @@ async def chat(request: ChatRequest, req: Request):
                                          timeout=60.0)
             response.raise_for_status()
             data = response.json()
+            usage = data.get("usage")
 
             raw_text = data["choices"][0]["message"]["content"].strip()
             parsed = json.loads(raw_text)
@@ -239,17 +304,18 @@ async def chat(request: ChatRequest, req: Request):
 
                 if detected_lang_code and db_pool:
                     async with db_pool.acquire() as conn:
+                        await log_api_usage(conn, session_id, "chat_setup", usage)
                         await conn.execute(
-                            "INSERT INTO user_settings (session_id, target_language_code, target_language_name, proficiency_level) VALUES ($1, $2, $3, NULL) ON CONFLICT (session_id) DO UPDATE SET target_language_code = $2, target_language_name = $3, proficiency_level = NULL",
+                            "INSERT INTO user_settings (session_id, target_language_code, target_language_name, proficiency_level) VALUES ($1, $2, $3, 0) ON CONFLICT (session_id) DO UPDATE SET target_language_code = $2, target_language_name = $3, proficiency_level = 0",
                             session_id, detected_lang_code, detected_lang_name
                         )
-                    # Обновляем переменную, чтобы передать на фронтенд, что язык теперь выбран
                     target_lang_code = detected_lang_code
             else:
                 ai_reply = parsed.get("translation", "Ошибка перевода.")
 
         if db_pool:
             async with db_pool.acquire() as conn:
+                await log_api_usage(conn, session_id, "chat", usage)
                 await conn.execute(
                     "INSERT INTO chat_history (session_id, role, content, source_language) VALUES ($1, $2, $3, $4)",
                     session_id, "user", request.message, source_lang_name
@@ -259,12 +325,26 @@ async def chat(request: ChatRequest, req: Request):
                     session_id, "assistant", ai_reply
                 )
 
-        # Возвращаем target_lang_code (он будет null, если бот спросил про язык)
         return {"session_id": session_id_str, "reply": ai_reply, "source_language": source_lang_name,
                 "target_language_code": target_lang_code}
 
+
+    except httpx.HTTPStatusError as e:
+
+        if e.response.status_code == 429:
+            print("OpenRouter Rate Limit (429): Слишком много запросов")
+
+            raise HTTPException(status_code=429,
+                                detail="ИИ перегружен. Слишком много запросов, попробуйте через минуту.")
+
+        raise HTTPException(status_code=e.response.status_code, detail=str(e))
+
     except Exception as e:
+
+        print(f"Check Lesson Error: {str(e)}")
+
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/api/lesson")
 async def mini_lesson(request: LessonRequest, req: Request):
@@ -274,60 +354,42 @@ async def mini_lesson(request: LessonRequest, req: Request):
     session_id_str = get_session_id(req)
     session_id = uuid.UUID(session_id_str)
 
-    target_lang_name = "иностранный"
-    proficiency_level = None
+    target_lang_name = "Китайский (мандаринский)"
+    proficiency_level = 0
 
     if db_pool:
         async with db_pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT target_language_name, proficiency_level FROM user_settings WHERE session_id = $1", session_id)
+                "SELECT target_language_name, proficiency_level, total_cost FROM user_settings WHERE session_id = $1",
+                session_id)
             if row:
-                target_lang_name = row["target_language_name"]
-                proficiency_level = row["proficiency_level"]
+                if row["target_language_name"]:
+                    target_lang_name = row["target_language_name"]
 
-    # Заголовки вынесены наверх, чтобы они были доступны в обоих режимах
+                if row["proficiency_level"] is not None:
+                    proficiency_level = row["proficiency_level"]
+                else:
+                    proficiency_level = 0
+
+                if row["total_cost"] is not None and row["total_cost"] >= 1.0:
+                    return {"action": "lesson",
+                            "lesson": "Вы достигли лимита бесплатных запросов (1$). Пожалуйста, купите подписку через техподдержку."}
+
     headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
 
-    # --- РЕЖИМ 1: Уровень еще не определен (Генерация проверочного текста) ---
-    if proficiency_level is None:
-        system_prompt = get_assessment_prompt(target_lang_name, request.user_text, request.ai_text)
-        payload = {
-            "model": MODEL_NAME,
-            "messages": [{"role": "system", "content": system_prompt}],
-            "response_format": {"type": "json_object"}
-        }
-
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers,
-                                             json=payload, timeout=60.0)
-                response.raise_for_status()
-                data = response.json()
-                parsed = json.loads(data["choices"][0]["message"]["content"].strip())
-                texts = parsed.get("texts", ["", "Ошибка генерации.", "", "", "", "", ""])
-                # Возвращаем массив текстов на фронтенд
-                return {"action": "assess", "texts": texts}
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-
-    # --- РЕЖИМ 2: Обычный мини-урок ---
-    question_or_phrase = [('Ответь', 'Question'),('Переведи', 'Phrase')][random.choice([0, 1])]
-    # НОВОЕ: Если пришел флаг use_history, берем историю из БД
-    if request.use_history and db_pool:
+    # ВСЕГДА берем историю из БД для контекста урока
+    history_log = "История пуста."
+    if db_pool:
         async with db_pool.acquire() as conn:
-            # Берем последние 12 сообщений ВКЛЮЧАЯ уроки и оценки
             rows = await conn.fetch(
                 "SELECT role, content FROM chat_history WHERE session_id = $1 ORDER BY created_at DESC LIMIT 12",
                 session_id
             )
-            # Формируем текст истории
-            history_log = "\n".join([f"{r['role']}: {r['content']}" for r in reversed(rows)])
+            if rows:
+                history_log = "\n".join([f"{r['role']}: {r['content']}" for r in reversed(rows)])
 
-        system_prompt = get_lesson_from_history_prompt(target_lang_name, proficiency_level, history_log,
-                                                       question_or_phrase)
-    else:
-        system_prompt = get_lesson_prompt(target_lang_name, proficiency_level, request.user_text, request.ai_text,
-                                          question_or_phrase)
+    question_or_phrase = [('Ответь', 'Question'), ('Переведи', 'Phrase')][random.choice([0, 1])]
+    system_prompt = get_lesson_from_history_prompt(target_lang_name, proficiency_level, history_log, question_or_phrase)
 
     payload = {
         "model": MODEL_NAME,
@@ -341,12 +403,14 @@ async def mini_lesson(request: LessonRequest, req: Request):
                                          timeout=60.0)
             response.raise_for_status()
             data = response.json()
+            usage = data.get("usage")
+
             parsed = json.loads(data["choices"][0]["message"]["content"].strip())
             lesson_text = parsed.get("lesson_text", "Не удалось создать урок.")
 
             if db_pool:
                 async with db_pool.acquire() as conn:
-                    # 1. Сохраняем урок в историю чата, чтобы пользователь его видел
+                    await log_api_usage(conn, session_id, "lesson_generate", usage)
                     await conn.execute(
                         "INSERT INTO chat_history (session_id, role, content, is_lesson) VALUES ($1, $2, $3, TRUE)",
                         session_id, "assistant", lesson_text
@@ -356,17 +420,36 @@ async def mini_lesson(request: LessonRequest, req: Request):
                                        new_level, session_id)
 
             return {"action": "lesson", "lesson": lesson_text}
+
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 429:
+            print("OpenRouter Rate Limit (429): Слишком много запросов")
+            raise HTTPException(status_code=429, detail="ИИ перегружен. Слишком много запросов, попробуйте через минуту.")
+        raise HTTPException(status_code=e.response.status_code, detail=str(e))
     except Exception as e:
+        print(f"Check Lesson Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-class SetLevelRequest(BaseModel):
-    level: str  # "0", "A1", "A2", "B1", "B2", "C1", "C2"
+@app.post("/api/abandon_lesson")
+async def abandon_lesson(req: Request):
+    session_id_str = get_session_id(req)
+    session_id = uuid.UUID(session_id_str)
 
+    if db_pool:
+        async with db_pool.acquire() as conn:
+            last_row = await conn.fetchrow(
+                "SELECT id, is_lesson, content FROM chat_history WHERE session_id = $1 ORDER BY created_at DESC LIMIT 1",
+                session_id
+            )
+            if last_row and last_row["is_lesson"]:
+                await conn.execute("DELETE FROM chat_history WHERE id = $1", last_row["id"])
+                await conn.execute(
+                    "INSERT INTO lesson_logs (session_id, content) VALUES ($1, $2)",
+                    session_id, last_row["content"]
+                )
 
-class CheckLessonRequest(BaseModel):
-    lesson_text: str
-    user_answer: str
+    return {"status": "ok"}
 
 
 @app.post("/api/check_lesson")
@@ -376,6 +459,16 @@ async def check_lesson(request: CheckLessonRequest, req: Request):
 
     session_id_str = get_session_id(req)
     session_id = uuid.UUID(session_id_str)
+
+    if db_pool:
+        try:
+            async with db_pool.acquire() as conn:
+                row = await conn.fetchrow("SELECT total_cost FROM user_settings WHERE session_id = $1", session_id)
+                if row and row["total_cost"] is not None and row["total_cost"] >= 1.0:
+                    return {"grade": "Не понятно", "correct_answer": "Вы достигли лимита. Купите подписку.",
+                            "explanation": "Лимит исчерпан."}
+        except Exception as db_err:
+            print(f"DB connection failed: {db_err}")
 
     system_prompt = get_lesson_evaluation_prompt(request.lesson_text, request.user_answer)
 
@@ -392,14 +485,20 @@ async def check_lesson(request: CheckLessonRequest, req: Request):
                                          timeout=60.0)
             response.raise_for_status()
             data = response.json()
+            usage = data.get("usage")
+
             raw_text = data["choices"][0]["message"]["content"].strip()
 
-            parsed = json.loads(raw_text)
-            grade = parsed.get("grade", "Ошибка")
-            explanation = parsed.get("explanation", "Нет пояснения.")
-            correct_answer = parsed.get("correct_answer", "")
+            try:
+                parsed = json.loads(raw_text)
+                grade = parsed.get("grade", "Ошибка")
+                explanation = parsed.get("translation_and_explanation", parsed.get("explanation", "Нет пояснения."))
+                correct_answer = parsed.get("correct_answer", "")
+            except json.JSONDecodeError:
+                grade = "Ошибка"
+                explanation = raw_text
+                correct_answer = ""
 
-        # Формируем текст для сохранения в БД (как JSON строку)
         eval_data = {
             "grade": grade,
             "explanation": explanation,
@@ -407,35 +506,62 @@ async def check_lesson(request: CheckLessonRequest, req: Request):
         }
         eval_json_str = json.dumps(eval_data, ensure_ascii=False)
 
-        # Формируем текст для отображения в пузыре ИИ
-        if grade == "Не понятно":
-            ai_reply = f"Правильный ответ:\n\n{correct_answer}"
-        elif grade == "Идеально":
-            ai_reply = "Идеально! 🎉"
-        else:
-            ai_reply = grade
-
         if db_pool:
-            async with db_pool.acquire() as conn:
-                await conn.execute(
-                    "INSERT INTO chat_history (session_id, role, content) VALUES ($1, $2, $3)",
-                    session_id, "user", request.user_answer
-                )
-                await conn.execute(
-                    "INSERT INTO chat_history (session_id, role, content, is_evaluation) VALUES ($1, $2, $3, TRUE)",
-                    session_id, "assistant", eval_json_str
-                )
+            try:
+                async with db_pool.acquire() as conn:
+                    await log_api_usage(conn, session_id, "check_lesson", usage)
+                    await conn.execute(
+                        "INSERT INTO chat_history (session_id, role, content) VALUES ($1, $2, $3)",
+                        session_id, "user", request.user_answer
+                    )
+                    await conn.execute(
+                        "INSERT INTO chat_history (session_id, role, content, is_evaluation) VALUES ($1, $2, $3, TRUE)",
+                        session_id, "assistant", eval_json_str
+                    )
+            except Exception as db_err:
+                print(f"Database connection failed: {db_err}")
 
         return {
             "grade": grade,
             "explanation": explanation,
-            "correct_answer": correct_answer,
-            "ai_reply": ai_reply
+            "correct_answer": correct_answer
         }
 
+
+    except httpx.HTTPStatusError as e:
+
+        if e.response.status_code == 429:
+            print("OpenRouter Rate Limit (429): Слишком много запросов")
+
+            raise HTTPException(status_code=429,
+                                detail="ИИ перегружен. Слишком много запросов, попробуйте через минуту.")
+
+        raise HTTPException(status_code=e.response.status_code, detail=str(e))
+
     except Exception as e:
+
         print(f"Check Lesson Error: {str(e)}")
+
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/set_level")
+async def set_level(request: SetLevelRequest, req: Request):
+    session_id_str = get_session_id(req)
+    session_id = uuid.UUID(session_id_str)
+
+    level_map = {
+        "0": 0, "A1": 10, "A2": 25, "B1": 40, "B2": 60, "C1": 80, "C2": 95
+    }
+    proficiency_level = level_map.get(request.level, 0)
+
+    if db_pool:
+        async with db_pool.acquire() as conn:
+            await conn.execute("UPDATE user_settings SET proficiency_level = $1 WHERE session_id = $2",
+                               proficiency_level, session_id)
+
+    return {"status": "ok"}
+
 
 @app.post("/api/upload_pdf")
 async def upload_pdf(file: UploadFile = File(...), req: Request = None):
@@ -445,7 +571,6 @@ async def upload_pdf(file: UploadFile = File(...), req: Request = None):
     session_id_str = get_session_id(req)
     session_id = uuid.UUID(session_id_str)
 
-    # 1. Читаем PDF
     contents = await file.read()
     reader = PdfReader(io.BytesIO(contents))
 
@@ -457,7 +582,6 @@ async def upload_pdf(file: UploadFile = File(...), req: Request = None):
     if not extracted_text:
         raise HTTPException(status_code=400, detail="Не удалось извлечь текст или файл пуст.")
 
-    # 2. Сохраняем ОРИГИНАЛЬНЫЙ текст в базу данных
     if db_pool:
         async with db_pool.acquire() as conn:
             await conn.execute(
@@ -465,15 +589,12 @@ async def upload_pdf(file: UploadFile = File(...), req: Request = None):
                 session_id, file.filename, extracted_text
             )
 
-    # 3. Разбиваем текст на части (по 2000 символов)
     chunk_size = 2000
     chunks = [extracted_text[i:i + chunk_size] for i in range(0, len(extracted_text), chunk_size)]
     headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
 
-    # 4. Создаем генератор для потоковой передачи
     async def translate_stream():
         full_translation = ""
-        # Используем один клиент для всех запросов
         async with httpx.AsyncClient() as client:
             for i, chunk in enumerate(chunks):
                 system_prompt = """You are a professional translator. Translate the following part of a document to Russian. 
@@ -494,13 +615,10 @@ async def upload_pdf(file: UploadFile = File(...), req: Request = None):
                     data = response.json()
                     translated_chunk = data["choices"][0]["message"]["content"].strip()
                     full_translation += translated_chunk + "\n"
-
-                    # Отправляем часть перевода на фронтенд
                     yield translated_chunk + "\n"
                 except Exception as e:
                     yield f"\n[Ошибка перевода части {i + 1}]\n"
 
-        # 5. После завершения перевода сохраняем весь перевод в историю чата
         if db_pool:
             async with db_pool.acquire() as conn:
                 user_msg = f"📄 Загружен файл: {file.filename}"
@@ -513,53 +631,124 @@ async def upload_pdf(file: UploadFile = File(...), req: Request = None):
                     session_id, "assistant", full_translation
                 )
 
-    # Возвращаем потоковый ответ
     return StreamingResponse(translate_stream(), media_type="text/plain")
 
-@app.post("/api/set_level")
-async def set_level(request: SetLevelRequest, req: Request):
+
+@app.post("/api/image_translate")
+async def image_translate(file: UploadFile = File(...), req: Request = None):
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(status_code=500, detail="OpenRouter API Key not configured")
+
     session_id_str = get_session_id(req)
     session_id = uuid.UUID(session_id_str)
 
-    level_map = {
-        "0": 0, "A1": 10, "A2": 25, "B1": 40, "B2": 60, "C1": 80, "C2": 95
+    if db_pool:
+        try:
+            async with db_pool.acquire() as conn:
+                row = await conn.fetchrow("SELECT total_cost FROM user_settings WHERE session_id = $1", session_id)
+                if row and row["total_cost"] is not None and row["total_cost"] >= 1.0:
+                    return {
+                        "reply": "Вы достигли лимита бесплатных запросов (1$). Пожалуйста, купите подписку через техподдержку.",
+                        "source_language": "Система"}
+        except Exception as db_err:
+            print(f"DB connection failed: {db_err}")
+
+    contents = await file.read()
+
+    try:
+        img = Image.open(io.BytesIO(contents))
+        img = img.convert('RGB')
+        buffer = io.BytesIO()
+        img.save(buffer, format='JPEG', quality=85)
+        jpeg_bytes = buffer.getvalue()
+        base64_image = base64.b64encode(jpeg_bytes).decode('utf-8')
+    except Exception as img_err:
+        print(f"Image conversion error: {img_err}")
+        base64_image = base64.b64encode(contents).decode('utf-8')
+
+    mime_type = 'image/jpeg'
+    data_uri = f"data:{mime_type};base64,{base64_image}"
+
+    prompt_text = """Проанализируй изображение. Что это?
+Переведи необрезанный текст на русский язык.
+Объедини описание изображения и переведённый текст в одно поле "reply".
+Используй Markdown-форматирование внутри поля "reply" для лучшей читаемости.
+Определи язык текста на изображении (на русском языке, например: "Английский", "Французский"). Если текста нет, используй "Нет текста".
+Верни СТРОГО JSON без markdown:
+{
+  "source_language_name": "Название языка на русском",
+  "reply": "Описание изображения и переведённый текст"
+}"""
+
+    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
+    payload = {
+        "model": "openai/gpt-4o-mini",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt_text},
+                    {"type": "image_url", "image_url": {"url": data_uri}}
+                ]
+            }
+        ],
+        "response_format": {"type": "json_object"}
     }
-    proficiency_level = level_map.get(request.level, 0)
 
-    if db_pool:
-        async with db_pool.acquire() as conn:
-            await conn.execute("UPDATE user_settings SET proficiency_level = $1 WHERE session_id = $2",
-                               proficiency_level, session_id)
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload,
+                                         timeout=60.0)
+            if response.status_code != 200:
+                error_text = response.text
+                print(f"--- OpenRouter Image Error ---\n{error_text}\n-----------------------------")
+                raise HTTPException(status_code=response.status_code, detail=f"OpenRouter API Error: {error_text}")
 
-    return {"status": "ok"}
+            data = response.json()
+            usage = data.get("usage")
+            raw_text = data["choices"][0]["message"]["content"].strip()
+
+            try:
+                parsed = json.loads(raw_text)
+                ai_reply = parsed.get("reply", "Ошибка обработки ответа.")
+                source_lang = parsed.get("source_language_name", "Фото")
+            except json.JSONDecodeError:
+                ai_reply = raw_text
+                source_lang = "Фото"
+
+        if db_pool:
+            try:
+                async with db_pool.acquire() as conn:
+                    await log_api_usage(conn, session_id, "image_translate", usage)
+                    await conn.execute(
+                        "INSERT INTO chat_history (session_id, role, content, source_language) VALUES ($1, $2, $3, $4)",
+                        session_id, "user", "📷 Фото для перевода", source_lang
+                    )
+                    await conn.execute(
+                        "INSERT INTO chat_history (session_id, role, content) VALUES ($1, $2, $3)",
+                        session_id, "assistant", ai_reply
+                    )
+            except Exception as db_err:
+                print(f"Database connection failed: {db_err}")
+
+        return {"reply": ai_reply, "source_language": source_lang}
 
 
-@app.post("/api/abandon_lesson")
-async def abandon_lesson(req: Request):
-    session_id_str = get_session_id(req)
-    session_id = uuid.UUID(session_id_str)
+    except httpx.HTTPStatusError as e:
 
-    if db_pool:
-        async with db_pool.acquire() as conn:
-            # Находим последнее сообщение
-            last_row = await conn.fetchrow(
-                "SELECT id, is_lesson, content FROM chat_history WHERE session_id = $1 ORDER BY created_at DESC LIMIT 1",
-                session_id
-            )
-            # Если это урок, удаляем его из чата и сохраняем в логи
-            if last_row and last_row["is_lesson"]:
-                await conn.execute("DELETE FROM chat_history WHERE id = $1", last_row["id"])
-                await conn.execute(
-                    "INSERT INTO lesson_logs (session_id, content) VALUES ($1, $2)",
-                    session_id, last_row["content"]
-                )
+        if e.response.status_code == 429:
+            print("OpenRouter Rate Limit (429): Слишком много запросов")
 
-    return {"status": "ok"}
+            raise HTTPException(status_code=429,
+                                detail="ИИ перегружен. Слишком много запросов, попробуйте через минуту.")
 
+        raise HTTPException(status_code=e.response.status_code, detail=str(e))
 
-# Модель, поддерживающая аудио (DeepSeek этого не умеет)
-# Исправленное название модели (на OpenRouter она называется так)
-AUDIO_MODEL_NAME = "google/gemini-2.5-flash-lite"
+    except Exception as e:
+
+        print(f"Check Lesson Error: {str(e)}")
+
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/audio_translate")
@@ -570,6 +759,17 @@ async def audio_translate(file: UploadFile = File(...), req: Request = None):
     session_id_str = get_session_id(req)
     session_id = uuid.UUID(session_id_str)
 
+    if db_pool:
+        try:
+            async with db_pool.acquire() as conn:
+                row = await conn.fetchrow("SELECT total_cost FROM user_settings WHERE session_id = $1", session_id)
+                if row and row["total_cost"] is not None and row["total_cost"] >= 1.0:
+                    return {
+                        "reply": "Вы достигли лимита бесплатных запросов (1$). Пожалуйста, купите подписку через техподдержку.",
+                        "source_language": "Система"}
+        except Exception as db_err:
+            print(f"DB connection failed: {db_err}")
+
     target_lang_name = "Русский"
     if db_pool:
         async with db_pool.acquire() as conn:
@@ -578,18 +778,14 @@ async def audio_translate(file: UploadFile = File(...), req: Request = None):
             if row:
                 target_lang_name = row["target_language_name"]
 
-    # 1. Читаем аудиофайл и кодируем в Base64
     contents = await file.read()
     base64_audio = base64.b64encode(contents).decode('utf-8')
-
-    # Жестко задаем webm, так как MediaRecorder обычно пишет в нем
     mime_type = 'audio/webm'
     data_uri = f"data:{mime_type};base64,{base64_audio}"
 
-    # 2. Формируем промпт для перевода
     prompt_text = f"""You are a professional translator. Listen to the audio. 
-    Translate it to Russian.
     If the user speaks in Russian, translate it to {target_lang_name}.
+    If the user speaks in any other language, translate it to Russian.
     Output strictly only the translated text without any comments, markdown, or quotes."""
 
     headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
@@ -607,140 +803,21 @@ async def audio_translate(file: UploadFile = File(...), req: Request = None):
     }
 
     try:
-        # 3. Отправляем запрос в OpenRouter
         async with httpx.AsyncClient() as client:
             response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload,
                                          timeout=60.0)
-
-            # Если OpenRouter вернул ошибку (например, 400 Bad Request), читаем текст ошибки
-            if response.status_code != 200:
-                error_text = response.text
-                print(f"OpenRouter Audio Error: {error_text}")
-                raise HTTPException(status_code=response.status_code, detail=f"OpenRouter API Error: {error_text}")
-
+            response.raise_for_status()
             data = response.json()
-
-            # Проверяем, не вернул ли OpenRouter пустой ответ
-            if "choices" not in data or not data["choices"]:
-                print(f"OpenRouter Empty Response: {data}")
-                raise HTTPException(status_code=500, detail="ИИ не вернул ответ для этого аудио.")
-
+            usage = data.get("usage")
             ai_reply = data["choices"][0]["message"]["content"].strip()
 
-        # 4. Сохраняем в историю чата
-        if db_pool:
-            async with db_pool.acquire() as conn:
-                await conn.execute(
-                    "INSERT INTO chat_history (session_id, role, content, source_language) VALUES ($1, $2, $3, $4)",
-                    session_id, "user", "🎤 Голосовое сообщение", "audio"
-                )
-                await conn.execute(
-                    "INSERT INTO chat_history (session_id, role, content) VALUES ($1, $2, $3)",
-                    session_id, "assistant", ai_reply
-                )
-
-        return {"reply": ai_reply, "source_language": "Голос"}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Audio Processing Error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/image_translate")
-async def image_translate(file: UploadFile = File(...), req: Request = None):
-    if not OPENROUTER_API_KEY:
-        raise HTTPException(status_code=500, detail="OpenRouter API Key not configured")
-
-    session_id_str = get_session_id(req)
-    session_id = uuid.UUID(session_id_str)
-
-    # 1. Читаем изображение и КОНВЕРТИРУЕМ В JPEG (чтобы избежать ошибок формата HEIC и др.)
-    contents = await file.read()
-
-    try:
-        # Открываем изображение через Pillow
-        img = Image.open(io.BytesIO(contents))
-        # Конвертируем в RGB (убираем альфа-канал, который не поддерживает JPEG)
-        img = img.convert('RGB')
-
-        # Сохраняем в буфер памяти как настоящий JPEG
-        buffer = io.BytesIO()
-        img.save(buffer, format='JPEG', quality=85)
-        jpeg_bytes = buffer.getvalue()
-
-        # Кодируем уже сконвертированный JPEG в Base64
-        base64_image = base64.b64encode(jpeg_bytes).decode('utf-8')
-    except Exception as img_err:
-        print(f"Image conversion error: {img_err}")
-        # Если вдруг Pillow не смог открыть файл,Fallback на оригинальные байты
-        base64_image = base64.b64encode(contents).decode('utf-8')
-
-    # Теперь мы точно знаем, что это валидный JPEG
-    mime_type = 'image/jpeg'
-    data_uri = f"data:{mime_type};base64,{base64_image}"
-
-    # 2. Формируем промпт
-    prompt_text = """Проанализируй изображение. Что это?
-Переведи весь текст на русский язык.
-Объедини описание изображения и переведённый текст в одно поле "reply".
-Используй Markdown-форматирование внутри поля "reply" для лучшей читаемости.
-Определи язык текста на изображении (на русском языке, например: "Английский", "Французский"). Если текста нет, используй "Нет текста".
-Верни СТРОГО JSON без markdown:
-{
-  "source_language_name": "Название языка на русском",
-  "reply": "Описание изображения и переведённый текст"
-}"""
-
-    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
-    payload = {
-        # ИЗМЕНЕНО: Правильное название модели для OpenRouter
-        "model": "dots-studio/dots-3-note-preview:free",
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt_text},
-                    {"type": "image_url", "image_url": {"url": data_uri}}
-                ]
-            }
-        ],
-        "response_format": {"type": "json_object"}
-    }
-
-    try:
-        # 3. Отправляем запрос в OpenRouter
-        async with httpx.AsyncClient() as client:
-            response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload,
-                                         timeout=60.0)
-
-            # ЕСЛИ OPENROUTER ВЕРНУЛ ОШИБКУ (4xx или 5xx)
-            if response.status_code != 200:
-                error_text = response.text
-                print(f"--- OpenRouter Image Error ---\n{error_text}\n-----------------------------")
-                raise HTTPException(status_code=response.status_code, detail=f"OpenRouter API Error: {error_text}")
-
-            data = response.json()
-            raw_text = data["choices"][0]["message"]["content"].strip()
-
-            # Парсим JSON
-            try:
-                parsed = json.loads(raw_text)
-                ai_reply = parsed.get("reply", "Ошибка обработки ответа.")
-                source_lang = parsed.get("source_language_name", "Фото")
-            except json.JSONDecodeError:
-                # Если ИИ забыл про JSON, используем сырой текст
-                ai_reply = raw_text
-                source_lang = "Фото"
-
-        # 4. Сохраняем в историю чата
         if db_pool:
             try:
                 async with db_pool.acquire() as conn:
+                    await log_api_usage(conn, session_id, "audio_translate", usage)
                     await conn.execute(
                         "INSERT INTO chat_history (session_id, role, content, source_language) VALUES ($1, $2, $3, $4)",
-                        session_id, "user", "📷 Фото для перевода", source_lang
+                        session_id, "user", "🎤 Голосовое сообщение", "audio"
                     )
                     await conn.execute(
                         "INSERT INTO chat_history (session_id, role, content) VALUES ($1, $2, $3)",
@@ -749,16 +826,25 @@ async def image_translate(file: UploadFile = File(...), req: Request = None):
             except Exception as db_err:
                 print(f"Database connection failed: {db_err}")
 
-        # Возвращаем ответ и язык на фронтенд
-        return {"reply": ai_reply, "source_language": source_lang}
+        return {"reply": ai_reply, "source_language": "Голос"}
 
-    except HTTPException:
-        raise
+
+    except httpx.HTTPStatusError as e:
+
+        if e.response.status_code == 429:
+            print("OpenRouter Rate Limit (429): Слишком много запросов")
+
+            raise HTTPException(status_code=429,
+                                detail="ИИ перегружен. Слишком много запросов, попробуйте через минуту.")
+
+        raise HTTPException(status_code=e.response.status_code, detail=str(e))
+
     except Exception as e:
-        print(f"Image Processing Error: {str(e)}")
+
+        print(f"Check Lesson Error: {str(e)}")
+
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/")
 def read_root():
     return {"status": "Backend is running"}
-
