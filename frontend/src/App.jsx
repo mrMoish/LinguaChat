@@ -2,6 +2,25 @@ import { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import './App.css';
+import { searchLanguages, popularLanguages } from './languages';
+
+const LONG_PRESS_MS = 280;
+const HINT_STEP_MS = 1000;
+
+function hasForeignText(text) {
+  if (!text) return false;
+  return /[^\u0000-\u007F\u0400-\u04FF\s.,!?;:'"()\-–—…«»0-9]/.test(text) || /[A-Za-z]/.test(text);
+}
+
+function pickVoice(voices, locale) {
+  if (!voices || voices.length === 0) return null;
+  const exact = voices.find(v => v.lang === locale);
+  if (exact) return exact;
+  const base = (locale || '').split('-')[0];
+  const baseMatch = voices.find(v => v.lang && v.lang.split('-')[0] === base);
+  if (baseMatch) return baseMatch;
+  return null;
+}
 
 function App() {
   const [messages, setMessages] = useState([]);
@@ -9,94 +28,64 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [isInitializing, setIsInitializing] = useState(true);
   const [sessionId, setSessionId] = useState(null);
-  const chatContainerRef = useRef(null);
 
-  // PWA установки
+  const [targetLangCode, setTargetLangCode] = useState(null);
+  const [languageLocale, setLanguageLocale] = useState(null);
+  const [pendingQuestion, setPendingQuestion] = useState('');
+
+  const [hintStates, setHintStates] = useState({});
+  const hintTimersRef = useRef({});
+
+  const chatContainerRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const voicesRef = useRef([]);
+
   const [deferredPrompt, setDeferredPrompt] = useState(null);
   const [isAppInstalled, setIsAppInstalled] = useState(false);
 
-  // Запись аудио
   const [isRecording, setIsRecording] = useState(false);
+  const [voiceSessionOpen, setVoiceSessionOpen] = useState(false);
+  const [voiceSessionStatus, setVoiceSessionStatus] = useState('listening');
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
+  const recognitionRef = useRef(null);
+  const pressTimerRef = useRef(null);
+  const pressStartedLongRef = useRef(false);
+  const voiceSessionActiveRef = useRef(false);
 
-  // Файлы
-  const fileInputRef = useRef(null);
+  const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
 
-  // Вспомогательная функция для форматирования ответа ИИ (массив или строка)
-  const formatCorrectAnswer = (correctAns, explanation) => {
-    if (Array.isArray(correctAns) && correctAns.length > 0) {
-      if (Array.isArray(correctAns[0])) {
-        // Массив массивов: [["Hello", "хэлОу"], ["World", "вОрлд"]]
-        const header = correctAns.map(item => item[1]).join(' | ');
-        const separator = correctAns.map(() => '---').join(' | ');
-        const words = correctAns.map(item => `**${item[0]}**`).join(' | ');
-        return `${header}\n${separator}\n${words}\n\n${explanation || ''}`;
-      } else if (correctAns.length === 3 && typeof correctAns[0] === 'string') {
-        // Простой массив: ["Hello World", "хэлоу ворлд", "Привет, мир"]
-        return `**${correctAns[0]}**\n[${correctAns[1]}]\n${correctAns[2]}`;
-      }
+  useEffect(() => {
+    const loadVoices = () => { voicesRef.current = window.speechSynthesis.getVoices(); };
+    loadVoices();
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.onvoiceschanged = loadVoices;
     }
-    // Обычная строка
-    return `**${correctAns}**\n\n${explanation || ''}`;
-  };
+  }, []);
 
   useEffect(() => {
     const initChat = async () => {
       let currentSessionId = localStorage.getItem('translator_session_id');
-
-      if (currentSessionId) {
-        const savedHistory = localStorage.getItem('translator_chat_history');
-        if (savedHistory) {
-          try {
-            const parsed = JSON.parse(savedHistory);
-            setMessages(parsed.filter(m => !m.isError && !m.isAssessment));
-          } catch (e) {}
-        }
-      }
-
       try {
-        const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
         const headers = {};
         if (currentSessionId) headers['X-Session-Id'] = currentSessionId;
-
         const response = await fetch(`${backendUrl}/api/history`, { headers });
         if (response.ok) {
           const data = await response.json();
           localStorage.setItem('translator_session_id', data.session_id);
           setSessionId(data.session_id);
 
-          const rawHistory = data.history.map(m => ({ ...m, hideLesson: !data.target_language_code }));
-
-          for (let i = 0; i < rawHistory.length; i++) {
-            if (rawHistory[i].role === 'assistant' && rawHistory[i].isEvaluation) {
-              try {
-                const evalData = JSON.parse(rawHistory[i].content);
-                rawHistory[i].evalData = evalData;
-
-                if (i > 0 && rawHistory[i - 1].role === 'user') {
-                  rawHistory[i - 1].evalData = evalData;
-                  if (evalData.grade === 'Хорошо') {
-                    rawHistory[i - 1].showExplainLink = true;
-                  }
-                }
-              } catch (e) {}
-            }
+          if (data.settings) {
+            setTargetLangCode(data.settings.target_language_code);
+            setLanguageLocale(data.settings.language_locale);
           }
+          setMessages(data.history || []);
 
-          const visibleHistory = rawHistory.filter(m => {
-            if (m.role === 'assistant' && m.isEvaluation && m.evalData) {
-              if (m.evalData.grade === 'Не понятно') {
-                m.content = formatCorrectAnswer(m.evalData.correct_answer, m.evalData.explanation);
-                return true;
-              }
-              return false;
-            }
-            return true;
-          });
-
-          setMessages(visibleHistory);
-          localStorage.setItem('translator_chat_history', JSON.stringify(visibleHistory));
+          const lastAssistant = [...(data.history || [])].reverse().find(m => m.role === 'assistant');
+          if (lastAssistant) {
+            const parts = lastAssistant.content.split('\n\n');
+            setPendingQuestion(parts[parts.length - 1] || lastAssistant.content);
+          }
         }
       } catch (error) {
         console.error('Ошибка загрузки истории:', error);
@@ -105,13 +94,11 @@ function App() {
       }
     };
     initChat();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     if (messages.length > 0) {
-      const cleanMessages = messages.filter(m => !m.isError && !m.isAssessment);
-      localStorage.setItem('translator_chat_history', JSON.stringify(cleanMessages));
-
       const timer = setTimeout(() => {
         window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
       }, 100);
@@ -119,26 +106,15 @@ function App() {
     }
   }, [messages, isLoading]);
 
-  // PWA Logic
   useEffect(() => {
     if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true) {
       setIsAppInstalled(true);
       return;
     }
-
-    const handleBeforeInstallPrompt = (e) => {
-      e.preventDefault();
-      setDeferredPrompt(e);
-    };
-
-    const handleAppInstalled = () => {
-      setIsAppInstalled(true);
-      setDeferredPrompt(null);
-    };
-
+    const handleBeforeInstallPrompt = (e) => { e.preventDefault(); setDeferredPrompt(e); };
+    const handleAppInstalled = () => { setIsAppInstalled(true); setDeferredPrompt(null); };
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
     window.addEventListener('appinstalled', handleAppInstalled);
-
     return () => {
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
       window.removeEventListener('appinstalled', handleAppInstalled);
@@ -149,240 +125,220 @@ function App() {
     if (!deferredPrompt) return;
     deferredPrompt.prompt();
     const { outcome } = await deferredPrompt.userChoice;
-    if (outcome === 'accepted') {
-      setIsAppInstalled(true);
-    }
+    if (outcome === 'accepted') setIsAppInstalled(true);
     setDeferredPrompt(null);
   };
 
-  const sendRequest = async (text, messagesState) => {
+  const [languageQuery, setLanguageQuery] = useState('');
+
+  const selectLanguage = async (lang) => {
     setIsLoading(true);
     try {
-      const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
-      const headers = { 'Content-Type': 'application/json' };
-      if (sessionId) headers['X-Session-Id'] = sessionId;
-
-      const response = await fetch(`${backendUrl}/api/chat`, {
+      const response = await fetch(`${backendUrl}/api/select_language`, {
         method: 'POST',
-        headers: headers,
-        body: JSON.stringify({ message: text })
+        headers: { 'Content-Type': 'application/json', ...(sessionId ? { 'X-Session-Id': sessionId } : {}) },
+        body: JSON.stringify({ code: lang.code, locale: lang.locale, name: lang.name })
       });
-
-      if (!response.ok) throw new Error('Network response was not ok');
-
       const data = await response.json();
-      if (data.session_id) {
-        localStorage.setItem('translator_session_id', data.session_id);
-        setSessionId(data.session_id);
-      }
-
-      const finalMessages = [...messagesState];
-      const lastIdx = finalMessages.length - 1;
-
-      // Обновляем сообщение пользователя, добавляя язык, коррекцию и перевод
-      if (lastIdx >= 0 && finalMessages[lastIdx].role === 'user') {
-        finalMessages[lastIdx] = {
-          ...finalMessages[lastIdx],
-          source_language: data.source_language || null,
-          correction: data.correction || [],
-          translation: data.translation || ''
-        };
-      }
-
-      const aiMessage = {
-        role: 'assistant',
-        content: data.reply,
-        hideLesson: !data.target_language_code
-      };
-      finalMessages.push(aiMessage);
-
-      setMessages(finalMessages);
-      localStorage.setItem('translator_chat_history', JSON.stringify(finalMessages.filter(m => !m.isError && !m.isAssessment)));
+      localStorage.setItem('translator_session_id', data.session_id);
+      setSessionId(data.session_id);
+      setTargetLangCode(data.target_language_code);
+      setLanguageLocale(data.language_locale);
+      setPendingQuestion(data.question);
+      setMessages([{ role: 'assistant', content: data.question }]);
+      setLanguageQuery('');
     } catch (error) {
-      console.error('Error:', error);
-      const errorMessage = {
-        role: 'assistant',
-        content: 'Ошибка перевода. Попробуйте позже.',
-        isError: true,
-        originalText: text
-      };
-      const finalMessages = [...messagesState, errorMessage];
-      setMessages(finalMessages);
+      console.error('Ошибка выбора языка:', error);
     } finally {
       setIsLoading(false);
     }
   };
 
-  const checkLessonAnswer = async (answerText, lessonMsg, messagesState) => {
-    setIsLoading(true);
-    try {
-      const userMessage = { role: 'user', content: answerText };
-      const messagesWithAnswer = [...messagesState, userMessage];
-      setMessages(messagesWithAnswer);
-
-      const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
-      const headers = { 'Content-Type': 'application/json' };
-      if (sessionId) headers['X-Session-Id'] = sessionId;
-
-      const response = await fetch(`${backendUrl}/api/check_lesson`, {
-        method: 'POST',
-        headers: headers,
-        body: JSON.stringify({ lesson_text: lessonMsg.content, user_answer: answerText })
-      });
-
-      if (!response.ok) throw new Error('Network response was not ok');
-
-      const data = await response.json();
-
-      const finalMessages = [...messagesWithAnswer];
-
-      finalMessages[finalMessages.length - 1].evalData = {
-        grade: data.grade,
-        correct_answer: data.correct_answer,
-        explanation: data.explanation
-      };
-
-      finalMessages[finalMessages.length - 1].showExplainLink = (data.grade === 'Хорошо');
-
-      if (data.grade === 'Не понятно') {
-        const formattedAns = formatCorrectAnswer(data.correct_answer, data.explanation);
-
-        finalMessages.push({
-          role: 'assistant',
-          content: formattedAns,
-          isEvaluation: true,
-          evalData: {
-            grade: data.grade,
-            correct_answer: data.correct_answer,
-            explanation: data.explanation
-          }
-        });
-      }
-
-      setMessages(finalMessages);
-      localStorage.setItem('translator_chat_history', JSON.stringify(finalMessages.filter(m => !m.isError && !m.isAssessment)));
-    } catch (error) {
-      console.error('Error checking lesson:', error);
-    } finally {
-      setIsLoading(false);
+  const applyMessageResponse = (data, baseMessages) => {
+    const finalMessages = [...baseMessages];
+    const lastIdx = finalMessages.length - 1;
+    if (lastIdx >= 0 && finalMessages[lastIdx].role === 'user' && data.user_feedback) {
+      finalMessages[lastIdx] = { ...finalMessages[lastIdx], feedback: data.user_feedback };
     }
-  };
 
-  const toggleExplanation = (userMsgIdx) => {
-    const newMessages = [...messages];
-    const userMsg = newMessages[userMsgIdx];
-    if (!userMsg.evalData) return;
-
-    const correctAns = userMsg.evalData.correct_answer;
-    const explanation = userMsg.evalData.explanation;
-    const formattedAns = formatCorrectAnswer(correctAns, explanation);
-
-    const aiMsgIdx = userMsgIdx + 1;
-    const existingAiMsg = newMessages[aiMsgIdx];
-
-    if (existingAiMsg && existingAiMsg.isEvaluation && existingAiMsg.content === formattedAns) {
-      newMessages.splice(aiMsgIdx, 1);
-      userMsg.showExplainLink = true;
+    if (data.mode === 'isolated') {
+      finalMessages.push({
+        role: 'assistant',
+        content: data.translation_package?.target_text || 'Перевод',
+        feedback: data.translation_package
+      });
     } else {
-      const newAiMessage = {
-        role: 'assistant',
-        content: formattedAns,
-        isEvaluation: true,
-        evalData: userMsg.evalData
-      };
-      newMessages.splice(userMsgIdx + 1, 0, newAiMessage);
-      userMsg.showExplainLink = false;
+      const content = data.reaction ? `${data.reaction}\n\n${data.next_question}`.trim() : data.next_question;
+      finalMessages.push({ role: 'assistant', content });
+      setPendingQuestion(data.next_question);
     }
 
+    setMessages(finalMessages);
+  };
+
+  const sendMessage = async (text) => {
+    if (!text.trim() || isLoading || !targetLangCode) return;
+    setIsLoading(true);
+    const userMessage = { role: 'user', content: text };
+    const newMessages = [...messages, userMessage];
     setMessages(newMessages);
-    localStorage.setItem('translator_chat_history', JSON.stringify(newMessages.filter(m => !m.isError && !m.isAssessment)));
+
+    try {
+      const response = await fetch(`${backendUrl}/api/message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(sessionId ? { 'X-Session-Id': sessionId } : {}) },
+        body: JSON.stringify({ message: text, current_question: pendingQuestion })
+      });
+      if (!response.ok) throw new Error('Network error');
+      const data = await response.json();
+      applyMessageResponse(data, newMessages);
+      return data;
+    } catch (error) {
+      console.error('Ошибка отправки:', error);
+      setMessages([...newMessages, { role: 'assistant', content: 'Не получилось отправить сообщение. Попробуйте позже.', isError: true }]);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
-
-    const cleanMessages = messages.filter(m => !m.isError && !m.isAssessment);
-    const lastMessage = cleanMessages[cleanMessages.length - 1];
-
-    const currentInput = input;
+    const text = input;
     setInput('');
+    await sendMessage(text);
+  };
 
-    if (lastMessage && lastMessage.isLesson) {
-      await checkLessonAnswer(currentInput, lastMessage, cleanMessages);
-    } else {
-      const userMessage = { role: 'user', content: currentInput, source_language: null };
-      const newMessages = [...cleanMessages, userMessage];
-      setMessages(newMessages);
-      await sendRequest(currentInput, newMessages);
+  const handleReplaceQuestion = async () => {
+    if (isLoading || !targetLangCode) return;
+    setIsLoading(true);
+    try {
+      const response = await fetch(`${backendUrl}/api/replace_question`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(sessionId ? { 'X-Session-Id': sessionId } : {}) },
+        body: JSON.stringify({ current_question: pendingQuestion })
+      });
+      const data = await response.json();
+      setPendingQuestion(data.question);
+      setMessages(prev => {
+        const arr = [...prev];
+        const lastIdx = arr.length - 1;
+        if (lastIdx >= 0 && arr[lastIdx].role === 'assistant') {
+          arr[lastIdx] = { ...arr[lastIdx], content: data.question };
+        }
+        return arr;
+      });
+    } catch (error) {
+      console.error('Ошибка замены вопроса:', error);
+    } finally {
+      setIsLoading(false);
     }
   };
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      if (!isLoading) {
-        handleSend();
-      }
+      if (!isLoading && targetLangCode) handleSend();
     }
   };
 
-  // === ОБРАБОТКА ФАЙЛОВ (PDF и Фото) ===
+  const runHintCycle = async (idx, text) => {
+    let state = hintStates[idx];
+    if (!state || !state.data) {
+      setHintStates(prev => ({ ...prev, [idx]: { step: 0, data: null, loading: true } }));
+      try {
+        const response = await fetch(`${backendUrl}/api/hint`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(sessionId ? { 'X-Session-Id': sessionId } : {}) },
+          body: JSON.stringify({ text })
+        });
+        const data = await response.json();
+        state = { step: 0, data, loading: false };
+        setHintStates(prev => ({ ...prev, [idx]: state }));
+      } catch (error) {
+        console.error('Ошибка подсказки:', error);
+        setHintStates(prev => ({ ...prev, [idx]: { step: 0, data: null, loading: false } }));
+        return;
+      }
+    }
+
+    if (hintTimersRef.current[idx]) clearInterval(hintTimersRef.current[idx]);
+    let step = 0;
+    setHintStates(prev => ({ ...prev, [idx]: { ...prev[idx], step: 0 } }));
+    hintTimersRef.current[idx] = setInterval(() => {
+      step += 1;
+      if (step > 4) {
+        clearInterval(hintTimersRef.current[idx]);
+        delete hintTimersRef.current[idx];
+        setHintStates(prev => ({ ...prev, [idx]: { ...prev[idx], step: 0 } }));
+        return;
+      }
+      setHintStates(prev => ({ ...prev, [idx]: { ...prev[idx], step } }));
+    }, HINT_STEP_MS);
+  };
+
+  const getHintDisplayText = (idx, originalText) => {
+    const state = hintStates[idx];
+    if (!state || !state.data) return originalText;
+    const { step, data } = state;
+    switch (step) {
+      case 1: return data.pronunciation_hint || originalText;
+      case 2: return data.literal_translation || originalText;
+      case 3: return data.meaning_translation || originalText;
+      default: return originalText;
+    }
+  };
+
+  const speakMessage = (text) => {
+    if (!text || !('speechSynthesis' in window)) {
+      if (!('speechSynthesis' in window)) alert('Озвучка не поддерживается в этом браузере.');
+      return Promise.resolve();
+    }
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    const voice = pickVoice(voicesRef.current.length ? voicesRef.current : window.speechSynthesis.getVoices(), languageLocale);
+    if (voice) {
+      utterance.voice = voice;
+      utterance.lang = voice.lang;
+    } else if (languageLocale) {
+      utterance.lang = languageLocale;
+    }
+    return new Promise((resolve) => {
+      utterance.onend = resolve;
+      utterance.onerror = resolve;
+      window.speechSynthesis.speak(utterance);
+    });
+  };
 
   const processPdf = async (file) => {
     setIsLoading(true);
     const userMessage = { role: 'user', content: `📄 Загружен файл: ${file.name}` };
     const aiMessage = { role: 'assistant', content: '' };
     setMessages(prev => [...prev, userMessage, aiMessage]);
-
     try {
       const formData = new FormData();
       formData.append('file', file);
-
-      const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
       const headers = {};
       if (sessionId) headers['X-Session-Id'] = sessionId;
-
-      const response = await fetch(`${backendUrl}/api/upload_pdf`, {
-        method: 'POST',
-        headers: headers,
-        body: formData
-      });
-
+      const response = await fetch(`${backendUrl}/api/upload_pdf`, { method: 'POST', headers, body: formData });
       if (!response.ok) throw new Error('Upload failed');
-
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
-
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         const chunkText = decoder.decode(value, { stream: true });
-
         setMessages(prev => {
-          const newMsgs = [...prev];
-          newMsgs[newMsgs.length - 1] = {
-            ...newMsgs[newMsgs.length - 1],
-            content: newMsgs[newMsgs.length - 1].content + chunkText
-          };
-          return newMsgs;
+          const arr = [...prev];
+          arr[arr.length - 1] = { ...arr[arr.length - 1], content: arr[arr.length - 1].content + chunkText };
+          return arr;
         });
       }
-
-      setMessages(prev => {
-        localStorage.setItem('translator_chat_history', JSON.stringify(prev.filter(m => !m.isError && !m.isAssessment)));
-        return prev;
-      });
-
     } catch (error) {
-      console.error('Error uploading file:', error);
+      console.error('Ошибка файла:', error);
       setMessages(prev => {
-        const newMsgs = [...prev];
-        newMsgs[newMsgs.length - 1] = {
-          ...newMsgs[newMsgs.length - 1],
-          content: 'Ошибка при обработке файла.',
-          isError: true
-        };
-        return newMsgs;
+        const arr = [...prev];
+        arr[arr.length - 1] = { ...arr[arr.length - 1], content: 'Ошибка при обработке файла.', isError: true };
+        return arr;
       });
     } finally {
       setIsLoading(false);
@@ -391,44 +347,21 @@ function App() {
 
   const processImage = async (file) => {
     setIsLoading(true);
-    const userMessage = { role: 'user', content: '📷 Фото для перевода', source_language: null };
+    const userMessage = { role: 'user', content: '📷 Фото для перевода' };
     const newMessages = [...messages, userMessage];
     setMessages(newMessages);
-
     try {
       const formData = new FormData();
       formData.append('file', file);
-
-      const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
       const headers = {};
       if (sessionId) headers['X-Session-Id'] = sessionId;
-
-      const response = await fetch(`${backendUrl}/api/image_translate`, {
-        method: 'POST',
-        headers: headers,
-        body: formData
-      });
-
+      const response = await fetch(`${backendUrl}/api/image_translate`, { method: 'POST', headers, body: formData });
       if (!response.ok) throw new Error('Image translation failed');
       const data = await response.json();
-
-      const finalMessages = [...newMessages];
-      if (finalMessages.length > 0 && finalMessages[finalMessages.length - 1].role === 'user') {
-        finalMessages[finalMessages.length - 1] = {
-          ...finalMessages[finalMessages.length - 1],
-          source_language: data.source_language || 'Фото'
-        };
-      }
-
-      const aiMessage = { role: 'assistant', content: data.reply };
-      finalMessages.push(aiMessage);
-      setMessages(finalMessages);
-      localStorage.setItem('translator_chat_history', JSON.stringify(finalMessages));
+      setMessages([...newMessages, { role: 'assistant', content: data.reply }]);
     } catch (error) {
-      console.error('Image error:', error);
-      const errorMessage = { role: 'assistant', content: 'Ошибка распознавания фото.', isError: true };
-      const finalMessages = [...newMessages, errorMessage];
-      setMessages(finalMessages);
+      console.error('Ошибка фото:', error);
+      setMessages([...newMessages, { role: 'assistant', content: 'Ошибка распознавания фото.', isError: true }]);
     } finally {
       setIsLoading(false);
     }
@@ -437,7 +370,6 @@ function App() {
   const handleFileSelect = async (event) => {
     const file = event.target.files[0];
     if (!file) return;
-
     if (file.type === 'application/pdf') {
       await processPdf(file);
     } else if (file.type.startsWith('image/')) {
@@ -448,244 +380,161 @@ function App() {
     event.target.value = null;
   };
 
-  // === АУДИО ===
-
-  const startRecording = async () => {
+  const startAudioRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mediaRecorder = new MediaRecorder(stream);
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
+      mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
 
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
-        }
-      };
+      let finalTranscript = '';
+      const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+      let recognition = null;
+      if (SpeechRecognitionCtor) {
+        recognition = new SpeechRecognitionCtor();
+        recognition.lang = languageLocale || 'ru-RU';
+        recognition.continuous = true;
+        recognition.interimResults = false;
+        recognition.onresult = (event) => {
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            if (event.results[i].isFinal) finalTranscript += event.results[i][0].transcript + ' ';
+          }
+        };
+        recognition.start();
+        recognitionRef.current = recognition;
+      }
 
       mediaRecorder.onstop = async () => {
-        stream.getTracks().forEach(track => track.stop());
+        stream.getTracks().forEach(t => t.stop());
+        if (recognitionRef.current) {
+          try { recognitionRef.current.stop(); } catch (e) {}
+        }
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        await sendAudioToServer(audioBlob);
+        const audioUrl = URL.createObjectURL(audioBlob);
+        const transcript = finalTranscript.trim();
+
+        if (!transcript) {
+          setMessages(prev => [...prev, { role: 'assistant', content: 'Не удалось распознать голосовое сообщение. Попробуй ещё раз или напиши текстом.', isError: true }]);
+          return;
+        }
+        setMessages(prev => [...prev, { role: 'user', content: transcript, isVoice: true, audioUrl }]);
+        await sendMessage(transcript);
       };
 
       mediaRecorder.start();
       setIsRecording(true);
     } catch (err) {
-      console.error("Ошибка доступа к микрофону:", err);
-      alert("Нет доступа к микрофону. Разрешите доступ в настройках браузера.");
+      console.error('Ошибка доступа к микрофону:', err);
+      alert('Нет доступа к микрофону. Разрешите доступ в настройках браузера.');
     }
   };
 
-  const stopRecording = () => {
+  const stopAudioRecording = () => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
     }
     setIsRecording(false);
   };
 
-  const sendAudioToServer = async (blob) => {
-    setIsLoading(true);
+  const handleMicPointerDown = () => {
+    pressStartedLongRef.current = false;
+    pressTimerRef.current = setTimeout(() => {
+      pressStartedLongRef.current = true;
+      startAudioRecording();
+    }, LONG_PRESS_MS);
+  };
 
-    // Временно показываем заглушку, пока ИИ расшифровывает голос
-    const userMessage = { role: 'user', content: '🎤 Распознавание голоса...', source_language: 'Голос' };
-    const newMessages = [...messages, userMessage];
-    setMessages(newMessages);
-
-    try {
-      const formData = new FormData();
-      formData.append('file', blob, 'audio.webm');
-
-      const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
-      const headers = {};
-      if (sessionId) headers['X-Session-Id'] = sessionId;
-
-      const response = await fetch(`${backendUrl}/api/audio_translate`, {
-        method: 'POST',
-        headers: headers,
-        body: formData
-      });
-
-      if (!response.ok) throw new Error('Audio translation failed');
-      const data = await response.json();
-
-      const finalMessages = [...newMessages];
-
-      // Заменяем заглушку на реальный распознанный текст и прикрепляем коррекцию
-      if (finalMessages.length > 0 && finalMessages[finalMessages.length - 1].role === 'user') {
-        finalMessages[finalMessages.length - 1] = {
-          ...finalMessages[finalMessages.length - 1],
-          content: data.transcribed_text || "🎤 Голосовое сообщение",
-          source_language: data.source_language || 'Голос',
-          correction: data.correction || [],
-          translation: data.translation || ''
-        };
-      }
-
-      const aiMessage = { role: 'assistant', content: data.reply };
-      finalMessages.push(aiMessage);
-      setMessages(finalMessages);
-      localStorage.setItem('translator_chat_history', JSON.stringify(finalMessages));
-    } catch (error) {
-      console.error('Audio error:', error);
-      const errorMessage = { role: 'assistant', content: 'Ошибка перевода аудио.', isError: true };
-      const finalMessages = [...newMessages, errorMessage];
-      setMessages(finalMessages);
-    } finally {
-      setIsLoading(false);
+  const handleMicPointerUp = () => {
+    if (pressTimerRef.current) {
+      clearTimeout(pressTimerRef.current);
+      pressTimerRef.current = null;
+    }
+    if (pressStartedLongRef.current) {
+      stopAudioRecording();
+    } else {
+      openVoiceSession();
     }
   };
 
-  // === УРОКИ ===
-
-  const handleRetry = async (errorIndex) => {
-    if (isLoading) return;
-
-    const errorMsgObj = messages[errorIndex];
-    if (!errorMsgObj.isError) return;
-
-    const messagesWithoutError = messages.slice(0, errorIndex);
-    setMessages(messagesWithoutError);
-
-    await sendRequest(errorMsgObj.originalText, messagesWithoutError);
+  const openVoiceSession = () => {
+    setVoiceSessionOpen(true);
+    voiceSessionActiveRef.current = true;
+    voiceSessionTurn();
   };
 
-  const generateLesson = async () => {
-    if (isLoading) return;
-
-    setIsLoading(true);
-
-    try {
-      const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
-      const headers = { 'Content-Type': 'application/json' };
-      if (sessionId) headers['X-Session-Id'] = sessionId;
-
-      const response = await fetch(`${backendUrl}/api/lesson`, {
-        method: 'POST',
-        headers: headers,
-        body: JSON.stringify({ user_text: "", ai_text: "" })
-      });
-
-      if (!response.ok) throw new Error('Network response was not ok');
-
-      const data = await response.json();
-
-      if (data.action === 'assess') {
-        const finalMessages = [...messages];
-        finalMessages.push({
-          role: 'assistant',
-          isAssessment: true,
-          texts: data.texts,
-          currentLevelIndex: 1
-        });
-        setMessages(finalMessages);
-      } else {
-        const finalMessages = [...messages];
-        finalMessages.push({ role: 'assistant', content: data.lesson, isLesson: true });
-        setMessages(finalMessages);
-        localStorage.setItem('translator_chat_history', JSON.stringify(finalMessages.filter(m => !m.isError && !m.isAssessment)));
-      }
-    } catch (error) {
-      console.error('Error:', error);
-    } finally {
-      setIsLoading(false);
+  const closeVoiceSession = () => {
+    voiceSessionActiveRef.current = false;
+    setVoiceSessionOpen(false);
+    if (recognitionRef.current) {
+      try { recognitionRef.current.stop(); } catch (e) {}
     }
+    window.speechSynthesis.cancel();
   };
 
-  const handleSliderChange = (msgIdx, levelIdx) => {
-    const newMessages = [...messages];
-    newMessages[msgIdx].currentLevelIndex = levelIdx;
-    setMessages(newMessages);
-  };
-
-  const confirmLevel = async (msgIdx) => {
-    const assessmentMsg = messages[msgIdx];
-    const levelMap = ["0", "A1", "A2", "B1", "B2", "C1", "C2"];
-    const selectedLevelStr = levelMap[assessmentMsg.currentLevelIndex];
-    const selectedText = assessmentMsg.texts[assessmentMsg.currentLevelIndex];
-
-    setIsLoading(true);
-    try {
-      const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
-      const headers = { 'Content-Type': 'application/json' };
-      if (sessionId) headers['X-Session-Id'] = sessionId;
-
-      await fetch(`${backendUrl}/api/set_level`, {
-        method: 'POST',
-        headers: headers,
-        body: JSON.stringify({ level: selectedLevelStr })
-      });
-
-      if (selectedLevelStr === "0") {
-        const userMsg = messages[msgIdx - 2];
-        const aiMsg = messages[msgIdx - 1];
-
-        const newMessages = [...messages];
-        newMessages[msgIdx] = { role: 'assistant', content: '', isLesson: true };
-        setMessages(newMessages);
-
-        const lessonResponse = await fetch(`${backendUrl}/api/lesson`, {
-          method: 'POST',
-          headers: headers,
-          body: JSON.stringify({
-            user_text: userMsg?.content || "",
-            ai_text: aiMsg?.content || "",
-            use_history: false
-          })
-        });
-
-        if (!lessonResponse.ok) throw new Error('Lesson generation failed');
-        const data = await lessonResponse.json();
-
-        const finalMessages = [...newMessages];
-        finalMessages[msgIdx] = {
-          role: 'assistant',
-          content: data.lesson || "Не удалось создать урок.",
-          isLesson: true
-        };
-        setMessages(finalMessages);
-        localStorage.setItem('translator_chat_history', JSON.stringify(finalMessages.filter(m => !m.isError && !m.isAssessment)));
-
-      } else {
-        const newMessages = [...messages];
-        newMessages[msgIdx] = {
-          role: 'assistant',
-          content: `🎓Мини-урок! Переведите:\n\n${selectedText}`,
-          isLesson: true
-        };
-        setMessages(newMessages);
-        localStorage.setItem('translator_chat_history', JSON.stringify(newMessages.filter(m => !m.isError && !m.isAssessment)));
-      }
-    } catch (error) {
-      console.error('Error saving level:', error);
-    } finally {
-      setIsLoading(false);
+  const voiceSessionTurn = () => {
+    if (!voiceSessionActiveRef.current) return;
+    setVoiceSessionStatus('listening');
+    const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognitionCtor) {
+      alert('Голосовой режим не поддерживается в этом браузере.');
+      closeVoiceSession();
+      return;
     }
+    const recognition = new SpeechRecognitionCtor();
+    recognition.lang = languageLocale || 'ru-RU';
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+    recognitionRef.current = recognition;
+
+    recognition.onresult = async (event) => {
+      if (!voiceSessionActiveRef.current) return;
+      const transcript = event.results[0][0].transcript;
+      setVoiceSessionStatus('thinking');
+      const data = await sendMessage(transcript);
+      if (!voiceSessionActiveRef.current) return;
+      setVoiceSessionStatus('speaking');
+      const spokenText = data?.mode === 'isolated'
+        ? (data.translation_package?.target_text || '')
+        : `${data?.reaction || ''} ${data?.next_question || ''}`.trim();
+      await speakMessage(spokenText);
+      voiceSessionTurn();
+    };
+    recognition.onerror = () => {
+      if (voiceSessionActiveRef.current) voiceSessionTurn();
+    };
+    recognition.start();
   };
 
-  const dismissLesson = async (msgIdx) => {
-    const newMessages = [...messages];
-    newMessages.splice(msgIdx, 1);
-    setMessages(newMessages);
-    localStorage.setItem('translator_chat_history', JSON.stringify(newMessages.filter(m => !m.isError && !m.isAssessment)));
-
-    try {
-      const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
-      const headers = {};
-      if (sessionId) headers['X-Session-Id'] = sessionId;
-      await fetch(`${backendUrl}/api/abandon_lesson`, {
-        method: 'POST',
-        headers: headers
-      });
-    } catch (e) {
-      console.error('Error abandoning lesson on server:', e);
+  const renderMessageContent = (msg, idx) => {
+    if (msg.feedback && msg.feedback.type === 'translation_package') {
+      const tp = msg.feedback;
+      return (
+        <div className="translation-card">
+          <div className="translation-card-main">{tp.target_text}</div>
+          <div className="translation-card-sub">{tp.pronunciation_hint}</div>
+          <div className="translation-card-sub">{tp.literal_translation}</div>
+          <div className="translation-card-sub">{tp.meaning_translation}</div>
+          <button className="translation-copy-btn" onClick={() => navigator.clipboard?.writeText(tp.target_text)}>
+            Копировать
+          </button>
+        </div>
+      );
     }
+    const displayText = getHintDisplayText(idx, msg.content);
+    return (
+      <div className="markdown-content">
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayText || ''}</ReactMarkdown>
+      </div>
+    );
   };
+
+  const showLanguagePicker = !isInitializing && !targetLangCode;
+  const filteredLanguages = languageQuery.trim() ? searchLanguages(languageQuery) : [];
+  const popular = popularLanguages();
 
   return (
-    <div className={`app-container ${messages.length === 0 ? 'empty-state-app' : 'chat-active-app'}`}>
-
-      {/* Кнопка установки PWA */}
+    <div className={`app-container ${messages.length === 0 && !showLanguagePicker ? 'empty-state-app' : 'chat-active-app'}`}>
       {!isAppInstalled && deferredPrompt && (
         <button className="login-btn" onClick={handleInstallClick} aria-label="Установить">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -697,104 +546,50 @@ function App() {
         </button>
       )}
 
-      {messages.length > 0 ? (
+      {showLanguagePicker ? (
+        <div className="empty-state language-picker">
+          <p>Какой язык хочешь изучать?</p>
+          {filteredLanguages.length > 0 ? (
+            <div className="language-grid">
+              {filteredLanguages.map(lang => (
+                <button key={lang.code} className="language-btn" onClick={() => selectLanguage(lang)} disabled={isLoading}>
+                  {lang.name}
+                </button>
+              ))}
+            </div>
+          ) : languageQuery.trim() ? (
+            <p className="language-empty">Ничего не найдено</p>
+          ) : (
+            <div className="language-grid">
+              {popular.map(lang => (
+                <button key={lang.code} className="language-btn" onClick={() => selectLanguage(lang)} disabled={isLoading}>
+                  {lang.name}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : messages.length > 0 ? (
         <div className="chat-container" ref={chatContainerRef}>
           {messages.map((msg, idx) => {
-            const isLastMessage = idx === messages.length - 1;
-
-            if (msg.isAssessment) {
-              return (
-                <div key={idx} className="message-wrapper assistant">
-                  <div className="message assessment-card">
-                    <div className="assessment-content-wrapper">
-                      <div className="assessment-text-area">
-                        {msg.currentLevelIndex === 0 ? (
-                          <p className="beginner-text">Я только начал учить язык</p>
-                        ) : (
-                          <div style={{ whiteSpace: 'pre-wrap' }}>
-                            {msg.texts[msg.currentLevelIndex]}
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="assessment-slider">
-                        {[6, 5, 4, 3, 2, 1, 0].map((levelIdx) => (
-                          <div
-                            key={levelIdx}
-                            className={`slider-dot ${msg.currentLevelIndex === levelIdx ? 'active' : ''}`}
-                            onClick={() => handleSliderChange(idx, levelIdx)}
-                          ></div>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="assessment-footer">
-                      <span className="assessment-prompt-text">Выберите свой уровень языка</span>
-                      <button
-                        className="confirm-level-btn"
-                        onClick={() => confirmLevel(idx)}
-                        disabled={isLoading}
-                      >
-                        Это мой уровень
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              );
-            }
+            const isTranslationCard = msg.feedback && msg.feedback.type === 'translation_package';
             return (
               <div key={idx} className={`message-wrapper ${msg.role}`}>
-                <div className={`message ${msg.role} ${msg.isError ? 'error-message' : ''} ${msg.isLesson ? 'lesson-message' : ''} ${msg.isEvaluation ? 'evaluation-message' : ''}`}>
-                  {msg.isLesson && isLastMessage && (
-                    <button className="lesson-close-btn" onClick={() => dismissLesson(idx)} aria-label="Закрыть">
-                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                        <line x1="18" y1="6" x2="6" y2="18"></line>
-                        <line x1="6" y1="6" x2="18" y2="18"></line>
-                      </svg>
-                    </button>
-                  )}
-
-                  <div className="markdown-content">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                      {msg.content || ''}
-                    </ReactMarkdown>
-                  </div>
-
-                  {msg.isError && (
-                    <button className="retry-btn" onClick={() => handleRetry(idx)} disabled={isLoading}>
-                      Попробовать снова
-                    </button>
-                  )}
+                <div className={`message ${msg.role} ${msg.isError ? 'error-message' : ''}`}>
+                  {msg.isVoice && <audio controls src={msg.audioUrl} className="voice-message-player" />}
+                  {renderMessageContent(msg, idx)}
                 </div>
 
-                {/* Тег исходного языка */}
-                {msg.role === 'user' && msg.source_language && !msg.evalData && !msg.correction?.length && (
-                  <div className="source-language-tag">{msg.source_language}</div>
-                )}
-
-                {/* Блок исправлений и перевода для обычного чата */}
-                {msg.role === 'user' && msg.correction && msg.correction.length > 0 && (
-                  <div className="correction-block">
-                    <div className="markdown-content">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                        {formatCorrectAnswer(msg.correction, msg.translation)}
-                      </ReactMarkdown>
-                    </div>
+                {!isTranslationCard && hasForeignText(msg.content) && !msg.isError && (
+                  <div className="hint-controls">
+                    <button className="tts-btn" onClick={() => speakMessage(msg.content)} aria-label="Воспроизвести">🔊</button>
+                    <button className="hint-btn" onClick={() => runHintCycle(idx, msg.content)} aria-label="Подсказка">💡</button>
                   </div>
                 )}
 
-                {/* Статус проверки урока под сообщением пользователя */}
-                {msg.role === 'user' && msg.evalData && (
-                  <div className="source-language-tag eval-tag">
-                    {msg.showExplainLink && (
-                      <button className="ideal-translation-link" onClick={() => toggleExplanation(idx)}>
-                        идеальный перевод
-                      </button>
-                    )}
-                    <span>{msg.evalData.grade}</span>
-                  </div>
+                {msg.role === 'user' && msg.feedback && msg.feedback.type === 'correction' && (
+                  <div className="source-language-tag eval-tag">{msg.feedback.correction}</div>
                 )}
-
               </div>
             );
           })}
@@ -807,85 +602,70 @@ function App() {
             </div>
           )}
         </div>
-      ) : (
-        !isLoading && (
-          <div className="empty-state">
-            <p>Пришли то, что тебе не понятно, или скажи, какой язык хочешь изучать.</p>
-          </div>
-        )
-      )}
+      ) : null}
 
-      <div className="input-area">
-        {/* Кнопка скрепки (системное меню) */}
-        <button className="action-btn" aria-label="Прикрепить файл" onClick={() => fileInputRef.current.click()}>
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
-          </svg>
-        </button>
-
-        <input
-          type="file"
-          accept="image/*,application/pdf"
-          ref={fileInputRef}
-          style={{ display: 'none' }}
-          onChange={handleFileSelect}
-        />
-
-        <textarea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="Введите текст..."
-          rows={1}
-        />
-
-        <button
-          className={`action-btn mic-btn ${isRecording ? 'recording' : ''}`}
-          onClick={isRecording ? stopRecording : startRecording}
-          aria-label="Голосовой ввод"
-        >
-          {isRecording ? (
-            <span className="rec-dot"></span>
-          ) : (
+      {!showLanguagePicker && (
+        <div className="input-area">
+          <button className="action-btn" aria-label="Прикрепить файл" onClick={() => fileInputRef.current.click()}>
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
-              <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
-              <line x1="12" y1="19" x2="12" y2="23"></line>
-              <line x1="8" y1="23" x2="16" y2="23"></line>
-            </svg>
-          )}
-        </button>
-
-        <div className="send-wrapper">
-          <button
-            onClick={handleSend}
-            disabled={!input.trim() || isLoading}
-            className="send-btn"
-            aria-label="Отправить"
-          >
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="22" y1="2" x2="11" y2="13"></line>
-              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
             </svg>
           </button>
+          <input type="file" accept="image/*,application/pdf" ref={fileInputRef} style={{ display: 'none' }} onChange={handleFileSelect} />
 
-          {!input.trim() && !isLoading && (
-            <button
-              className="send-btn mini-lesson-overlay"
-              onClick={() => generateLesson()}
-              aria-label="Мини-урок"
-            >
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M 0,-10 L 2.94,-4.05 L 9.51,-3.09 L 4.76,1.55 L 5.88,8.09 L 0,5 L -5.88,8.09 L -4.76,1.55 L -9.51,-3.09 L -2.94,-4.05 Z" transform="translate(12, 12) scale(0.75)"/>
-                <path d="M 0,-10 L 2.94,-4.05 L 9.51,-3.09 L 4.76,1.55 L 5.88,8.09 L 0,5 L -5.88,8.09 L -4.76,1.55 L -9.51,-3.09 L -2.94,-4.05 Z" transform="translate(3, 21) scale(0.3)"/>
-                <path d="M 0,-10 L 2.94,-4.05 L 9.51,-3.09 L 4.76,1.55 L 5.88,8.09 L 0,5 L -5.88,8.09 L -4.76,1.55 L -9.51,-3.09 L -2.94,-4.05 Z" transform="translate(21, 3) scale(0.28)"/>
-                <path d="M 0,-10 L 2.94,-4.05 L 9.51,-3.09 L 4.76,1.55 L 5.88,8.09 L 0,5 L -5.88,8.09 L -4.76,1.55 L -9.51,-3.09 L -2.94,-4.05 Z" transform="translate(21, 21) scale(0.25)"/>
-                <path d="M 0,-10 L 2.94,-4.05 L 9.51,-3.09 L 4.76,1.55 L 5.88,8.09 L 0,5 L -5.88,8.09 L -4.76,1.55 L -9.51,-3.09 L -2.94,-4.05 Z" transform="translate(3, 3) scale(0.27)"/>
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Введите текст..."
+            rows={1}
+          />
+
+          <button
+            className={`action-btn mic-btn ${isRecording ? 'recording' : ''}`}
+            onPointerDown={handleMicPointerDown}
+            onPointerUp={handleMicPointerUp}
+            onPointerLeave={() => { if (pressTimerRef.current) { clearTimeout(pressTimerRef.current); pressTimerRef.current = null; } }}
+            aria-label="Микрофон"
+          >
+            {isRecording ? <span className="rec-dot"></span> : (
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                <line x1="12" y1="19" x2="12" y2="23"></line>
+                <line x1="8" y1="23" x2="16" y2="23"></line>
               </svg>
-            </button>
-          )}
+            )}
+          </button>
+
+          <div className="send-wrapper">
+            {input.trim() ? (
+              <button onClick={handleSend} disabled={isLoading} className="send-btn" aria-label="Отправить">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="22" y1="2" x2="11" y2="13"></line>
+                  <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                </svg>
+              </button>
+            ) : (
+              <button onClick={handleReplaceQuestion} disabled={isLoading || !targetLangCode} className="replace-question-btn" aria-label="Заменить вопрос">
+                🔄 Заменить вопрос
+              </button>
+            )}
+          </div>
         </div>
-      </div>
+      )}
+
+      {voiceSessionOpen && (
+        <div className="voice-session-overlay">
+          <div className={`voice-session-circle ${voiceSessionStatus}`}></div>
+          <div className="voice-session-status">
+            {voiceSessionStatus === 'listening' && 'Слушаю...'}
+            {voiceSessionStatus === 'thinking' && 'Думаю...'}
+            {voiceSessionStatus === 'speaking' && 'Говорю...'}
+          </div>
+          <button className="voice-session-close" onClick={closeVoiceSession}>Завершить</button>
+        </div>
+      )}
     </div>
   );
 }
