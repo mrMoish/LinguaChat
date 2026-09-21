@@ -129,15 +129,31 @@ async def call_openrouter(messages: list, model: str):
 async def upload_to_supabase(jpeg_bytes: bytes) -> str:
     file_name = f"{uuid.uuid4().hex}.jpg"
     upload_url = f"{SUPABASE_URL}/storage/v1/object/{STORAGE_BUCKET}/{file_name}"
+
     headers = {
         "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
         "Content-Type": "image/jpeg",
-        "x-upsert": "true"
+        "x-upsert": "true",
     }
+
     async with httpx.AsyncClient() as client:
-        resp = await client.post(upload_url, headers=headers, content=jpeg_bytes, timeout=30.0)
-        if resp.status_code != 200:
-            raise HTTPException(500, "Failed to upload to Supabase Storage")
+        resp = await client.post(
+            upload_url,
+            headers=headers,
+            content=jpeg_bytes,
+            timeout=30.0,
+        )
+
+        if resp.status_code not in (200, 201):
+            print("Supabase upload failed:")
+            print("Status:", resp.status_code)
+            print("Response:", resp.text)
+
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to upload to Supabase Storage",
+            )
+
     return f"{SUPABASE_URL}/storage/v1/object/public/{STORAGE_BUCKET}/{file_name}"
 
 
