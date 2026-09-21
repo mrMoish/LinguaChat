@@ -141,14 +141,6 @@ body::-webkit-scrollbar-thumb:hover {
 
 .empty-state-app .input-area { position: relative; }
 
-.chat-active-app .input-area {
-  position: fixed;
-  bottom: 0;
-  left: 50%;
-  transform: translateX(-50%);
-  max-width: 768px;
-  box-shadow: none;
-}
 
 .input-area textarea {
   flex: 1;
@@ -163,7 +155,10 @@ body::-webkit-scrollbar-thumb:hover {
   line-height: 1.4;
   min-height: 48px;
   background-color: var(--bg-color);
+  /* Усилили тень: больше размытие и больше непрозрачность */
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
 }
+
 
 .input-area .action-btn,
 .input-area .send-btn {
@@ -177,8 +172,10 @@ body::-webkit-scrollbar-thumb:hover {
   border: none;
   border-radius: 50%;
   cursor: pointer;
-  transition: background 0.2s, transform 0.1s;
+  transition: background 0.2s, transform 0.1s, box-shadow 0.2s;
   flex-shrink: 0;
+  /* Усилили тень */
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.25);
 }
 
 .input-area .action-btn {
@@ -493,39 +490,6 @@ body::-webkit-scrollbar-thumb:hover {
   color: #ffffff;
 }
 
-/* Кнопка микрофона */
-.mic-btn {
-  transition: background-color 0.2s, color 0.2s;
-}
-
-/* Состояние записи (красный фон) */
-.mic-btn.recording {
-  background-color: #fee2e2;
-  color: #ef4444;
-  animation: pulse-border 1.5s infinite;
-}
-
-/* Красная пульсирующая точка */
-.rec-dot {
-  width: 14px;
-  height: 14px;
-  background-color: #ef4444;
-  border-radius: 50%;
-  animation: pulse-dot 1s infinite;
-}
-
-@keyframes pulse-dot {
-  0% { transform: scale(0.8); opacity: 0.8; }
-  50% { transform: scale(1.2); opacity: 1; }
-  100% { transform: scale(0.8); opacity: 0.8; }
-}
-
-@keyframes pulse-border {
-  0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
-  70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
-}
-
 /* Обертка для кнопки отправки и урока */
 .send-wrapper {
   position: relative;
@@ -549,8 +513,8 @@ body::-webkit-scrollbar-thumb:hover {
   left: 0;
   width: 100%;
   height: 100%;
-  background-color: #34c759; /* Яркий зеленый цвет */
-  color: #ffffff; /* Белый силуэт иконки */
+  background-color: #FF9500;
+  color: #ffffff;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -559,11 +523,13 @@ body::-webkit-scrollbar-thumb:hover {
   cursor: pointer;
   transition: background 0.2s, transform 0.1s;
   z-index: 10;
+  /* Усилили оранжевую тень */
+  box-shadow: 0 6px 18px rgba(255, 149, 0, 0.6);
+}
+.send-btn.mini-lesson-overlay:hover {
+  background-color: #E68A00; /* Темно-оранжевый при наведении */
 }
 
-.send-btn.mini-lesson-overlay:hover {
-  background-color: #28a745; /* Темно-зеленый при наведении */
-}
 
 /* Ссылка "идеальный перевод" (выглядит как обычный текст с подчеркиванием) */
 .ideal-translation-link {
@@ -580,4 +546,109 @@ body::-webkit-scrollbar-thumb:hover {
 
 .ideal-translation-link:hover {
   color: #666;
+}
+
+/* Стили для Markdown контента */
+.markdown-content {
+  line-height: 1.6;
+  word-wrap: break-word;
+}
+
+.markdown-content p {
+  margin-bottom: 0.5rem;
+}
+.markdown-content p:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-content ul, .markdown-content ol {
+  margin-left: 1.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.markdown-content li {
+  margin-bottom: 0.25rem;
+}
+
+.markdown-content strong {
+  font-weight: 600;
+}
+
+.markdown-content h1, .markdown-content h2, .markdown-content h3 {
+  font-weight: 600;
+  margin-top: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+/* Блоки кода внутри текста */
+.markdown-content code {
+  background-color: rgba(0, 0, 0, 0.05);
+  padding: 0.2em 0.4em;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 0.9em;
+}
+
+/* Отдельные блоки кода (```code```) */
+.markdown-content pre {
+  background-color: #f6f8fa;
+  padding: 1rem;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin-bottom: 0.5rem;
+}
+
+.markdown-content pre code {
+  background-color: transparent;
+  padding: 0;
+  border-radius: 0;
+  font-size: 0.9rem;
+}
+
+/* Блокquotes (цитаты) */
+.markdown-content blockquote {
+  border-left: 4px solid #d0e3ff;
+  padding-left: 1rem;
+  margin: 0.5rem 0;
+  color: #555;
+}
+
+.chat-active-app .input-area {
+  position: fixed;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 768px;
+  width: 100%;
+  box-shadow: none;
+  background-color: transparent;
+  /* Добавили env(safe-area-inset-bottom) для нижнего отступа */
+  padding: 1rem 1rem calc(2rem + env(safe-area-inset-bottom));
+  z-index: 20;
+}
+
+/* Стили для таблицы произношения в Markdown */
+.markdown-content table {
+  display: inline-table;
+  width: auto;
+  border-collapse: collapse;
+  margin-bottom: 8px;
+  margin-top: 4px;
+}
+
+.markdown-content thead th {
+  color: #bbb; /* Более незаметный серый цвет для произношения */
+  font-weight: normal;
+  font-size: 0.75rem;
+  border: none;
+  padding: 2px 10px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.markdown-content tbody td {
+  border: none;
+  padding: 2px 10px;
+  text-align: center;
+  white-space: nowrap;
 }

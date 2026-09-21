@@ -1,19 +1,15 @@
 import os
+import ssl
 import uuid
 import json
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import httpx
 import asyncpg
 from dotenv import load_dotenv
-from prompts import SETUP_SYSTEM_PROMPT, get_translation_prompt, get_lesson_prompt, get_assessment_prompt, get_single_word_prompt, get_lesson_evaluation_prompt, get_lesson_from_history_prompt, get_translation_pdf_prompt
-import random
-from fastapi import UploadFile, File
-from pypdf import PdfReader
-import io
-import base64
+
+from prompts import get_translation_prompt
 
 load_dotenv()
 
@@ -21,33 +17,73 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://trachat.vercel.app",
-                   "https://linguachat-x26d.onrender.com",
-                   "http://localhost:5173",
-                   "http://127.0.0.1:5173"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "https://trachat.vercel.app",
+        "https://linguachat-x26d.onrender.com"
+    ],
     allow_methods=["*"],
     allow_headers=["*", "X-Session-Id"],
 )
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-MODEL_NAME = "deepseek/deepseek-chat"
+MODEL_NAME = "deepseek/deepseek-chat" # "openai/gpt-5.6-luna" #
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+# Язык обучения по умолчанию — теперь английский (был китайский)
+DEFAULT_LANGUAGE_CODE = "es"
+DEFAULT_LANGUAGE_NAME = "испанский (Аргентина)"
+DEFAULT_LANGUAGE_LOCALE = "es-AR"
+
+# Уровень пользователя известен заранее и зафиксирован — экран/логика оценки уровня не нужны
+USER_LEVEL = "A2"
+
+RECENT_HISTORY_LIMIT = 8
+
 db_pool = None
+
+
+def build_ssl_arg():
+    """
+    Определяет, нужен ли SSL для подключения к Postgres.
+    DB_SSL_MODE=disable -> без SSL. DB_SSL_MODE=require -> с SSL.
+    По умолчанию (auto): localhost/127.0.0.1/::1 в DATABASE_URL -> без SSL, иначе -> с SSL
+    (подходит для managed Postgres вроде Render/Supabase/Neon).
+    """
+    mode = os.getenv("DB_SSL_MODE", "auto").lower()
+
+    if mode == "disable":
+        return None
+
+    if mode == "auto":
+        if not DATABASE_URL:
+            return None
+        local_markers = ("localhost", "127.0.0.1", "::1")
+        if any(marker in DATABASE_URL for marker in local_markers):
+            return None
+
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
 
 @app.on_event("startup")
 async def startup():
     global db_pool
     if DATABASE_URL:
         try:
-            # Обновленная строка создания пула
             db_pool = await asyncpg.create_pool(
-                DATABASE_URL,
-                min_size=1,
-                max_size=5,
-                timeout=30,
-                command_timeout=60,
-                max_inactive_connection_lifetime=60 # FIX: это сделано так как render sql бесплатный тариф, при платном тарифе для оптимизации наверное нужно убрать; Закрываем простаивающие соединения до того, как это сделает Render
+                DATABASE_URL, min_size=1, max_size=5, timeout=60,
+                command_timeout=60, max_inactive_connection_lifetime=60,
+                ssl=build_ssl_arg(),
+                # Многие managed Postgres (Supabase pooler, pgbouncer в режиме transaction/statement
+                # pooling и т.п.) не поддерживают серверные prepared statements между запросами —
+                # без этого asyncpg падает с DuplicatePreparedStatementError. Отключаем кэш
+                # подготовленных запросов на стороне asyncpg — рекомендация из самого asyncpg.
+                statement_cache_size=0
             )
             async with db_pool.acquire() as conn:
                 await conn.execute('''
@@ -59,57 +95,34 @@ async def startup():
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                     )
                 ''')
-                # НОВАЯ ТАБЛИЦА ДЛЯ ОРИГИНАЛЬНЫХ ТЕКСТОВ PDF
-                await conn.execute('''
-                    CREATE TABLE IF NOT EXISTS documents (
-                        id SERIAL PRIMARY KEY,
-                        session_id UUID NOT NULL,
-                        filename VARCHAR(255),
-                        original_text TEXT NOT NULL,
-                        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                    )
-                ''')
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS user_settings (
                         session_id UUID PRIMARY KEY,
-                        target_language_code VARCHAR(10),
+                        target_language_code VARCHAR(20),
                         target_language_name VARCHAR(100)
                     )
                 ''')
-                await conn.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS proficiency_level INTEGER DEFAULT 0")
-                await conn.execute("ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS is_lesson BOOLEAN DEFAULT FALSE")
-                await conn.execute("ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS source_language VARCHAR(50)")
-                await conn.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS proficiency_level INTEGER")
-                await conn.execute("ALTER TABLE user_settings ALTER COLUMN proficiency_level DROP NOT NULL")
-                await conn.execute("ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS is_evaluation BOOLEAN DEFAULT FALSE")
+                await conn.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS language_locale VARCHAR(20)")
 
-
-                # НОВАЯ ТАБЛИЦА ДЛЯ ЛОГОВ УРОКОВ
-                await conn.execute('''
-                    CREATE TABLE IF NOT EXISTS lesson_logs (
-                        id SERIAL PRIMARY KEY,
-                        session_id UUID NOT NULL,
-                        content TEXT NOT NULL,
-                        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                    )
-                ''')
+                # Логика "уровень из диалога" и "известный материал" относилась к прежней
+                # концепции друга-собеседника и больше не нужна для простого переводчика.
+                await conn.execute("ALTER TABLE user_settings DROP COLUMN IF EXISTS language_level")
+                await conn.execute("ALTER TABLE user_settings DROP COLUMN IF EXISTS known_material")
         except Exception as e:
             print(f"DB Error: {e}")
     else:
         print("ВНИМАНИЕ: DATABASE_URL не задан!")
+
 
 @app.on_event("shutdown")
 async def shutdown():
     if db_pool:
         await db_pool.close()
 
-class ChatRequest(BaseModel):
+
+class MessageRequest(BaseModel):
     message: str
 
-class LessonRequest(BaseModel):
-    user_text: str
-    ai_text: str
-    use_history: bool = False
 
 def get_session_id(req: Request):
     session_id_str = req.headers.get("X-Session-Id")
@@ -118,600 +131,122 @@ def get_session_id(req: Request):
     return session_id_str
 
 
+async def call_openrouter(messages):
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(status_code=500, detail="OpenRouter API Key not configured")
+    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
+    payload = {"model": MODEL_NAME, "messages": messages, "response_format": {"type": "json_object"}}
+    async with httpx.AsyncClient() as client:
+        response = await client.post(OPENROUTER_URL, headers=headers, json=payload, timeout=60.0)
+        response.raise_for_status()
+        return response.json()
+
+
+def handle_llm_error(e: Exception, context: str):
+    if isinstance(e, httpx.HTTPStatusError):
+        if e.response.status_code == 429:
+            raise HTTPException(status_code=429, detail="ИИ перегружен. Слишком много запросов, попробуйте через минуту.")
+        raise HTTPException(status_code=e.response.status_code, detail=str(e))
+    print(f"{context}: {str(e)}")
+    raise HTTPException(status_code=500, detail=str(e))
+
+
+async def build_recent_summary(session_id):
+    """Недавние сообщения пользователя — используются, чтобы понять, какие слова/выражения
+    он уже успешно употреблял (сигнал, что они ему знакомы для разметки B1)."""
+    if not db_pool:
+        return "История пуста."
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT role, content FROM chat_history WHERE session_id = $1 ORDER BY created_at DESC LIMIT $2",
+            session_id, RECENT_HISTORY_LIMIT
+        )
+    if not rows:
+        return "История пуста."
+    ordered = list(reversed(rows))
+    return "\n".join(f"{r['role']}: {r['content']}" for r in ordered)
+
+
+async def ensure_settings(conn, session_id):
+    row = await conn.fetchrow(
+        "SELECT target_language_code, target_language_name, language_locale FROM user_settings WHERE session_id = $1",
+        session_id
+    )
+    if row:
+        return row
+    await conn.execute(
+        "INSERT INTO user_settings (session_id, target_language_code, target_language_name, language_locale) "
+        "VALUES ($1, $2, $3, $4) ON CONFLICT (session_id) DO NOTHING",
+        session_id, DEFAULT_LANGUAGE_CODE, DEFAULT_LANGUAGE_NAME, DEFAULT_LANGUAGE_LOCALE
+    )
+    return await conn.fetchrow(
+        "SELECT target_language_code, target_language_name, language_locale FROM user_settings WHERE session_id = $1",
+        session_id
+    )
+
+
 @app.get("/api/history")
 async def get_history(req: Request):
     session_id_str = get_session_id(req)
     session_id = uuid.UUID(session_id_str)
 
-    target_lang_code = None
-    if db_pool:
-        async with db_pool.acquire() as conn:
-            # Проверяем, выбран ли язык
-            row_settings = await conn.fetchrow("SELECT target_language_code FROM user_settings WHERE session_id = $1",
-                                               session_id)
-            if row_settings:
-                target_lang_code = row_settings["target_language_code"]
+    if not db_pool:
+        return {"session_id": session_id_str, "history": []}
 
-            # 1. Проверяем последнее сообщение в истории
-            last_row = await conn.fetchrow(
-                "SELECT id, is_lesson, content FROM chat_history WHERE session_id = $1 ORDER BY created_at DESC LIMIT 1",
-                session_id
-            )
+    async with db_pool.acquire() as conn:
+        await ensure_settings(conn, session_id)
+        rows = await conn.fetch(
+            "SELECT role, content FROM chat_history WHERE session_id = $1 ORDER BY created_at ASC",
+            session_id
+        )
+        history = [{"role": r["role"], "content": r["content"]} for r in rows]
 
-            # Если последнее сообщение — это урок, значит пользователь на него не ответил (урок "висит").
-            # Удаляем его из чата, чтобы он пропал при обновлении страницы.
-            if last_row and last_row["is_lesson"]:
-                await conn.execute("DELETE FROM chat_history WHERE id = $1", last_row["id"])
-                # СОХРАНЯЕМ В ЛОГИ УРОКОВ (для статистики)
-                await conn.execute(
-                    "INSERT INTO lesson_logs (session_id, content) VALUES ($1, $2)",
-                    session_id, last_row["content"]
-                )
-
-            # 2. Достаем очищенную историю
-            rows = await conn.fetch(
-                "SELECT role, content, is_lesson, is_evaluation, source_language FROM chat_history WHERE session_id = $1 ORDER BY created_at ASC",
-                session_id
-            )
-            history = [{
-                "role": row["role"],
-                "content": row["content"],
-                "isLesson": row["is_lesson"],
-                "isEvaluation": row["is_evaluation"],
-                "source_language": row["source_language"]
-            } for row in rows]
-
-            return {"session_id": session_id_str, "history": history, "target_language_code": target_lang_code}
-
-    return {"session_id": session_id_str, "history": [], "target_language_code": None}
+    return {"session_id": session_id_str, "history": history}
 
 
-@app.post("/api/chat")
-async def chat(request: ChatRequest, req: Request):
+@app.post("/api/message")
+async def message(request: MessageRequest, req: Request):
     if not OPENROUTER_API_KEY:
         raise HTTPException(status_code=500, detail="OpenRouter API Key not configured")
 
     session_id_str = get_session_id(req)
     session_id = uuid.UUID(session_id_str)
 
-    target_lang_code = None
-    target_lang_name = None
-    if db_pool:
-        async with db_pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT target_language_code, target_language_name FROM user_settings WHERE session_id = $1",
-                session_id)
-            if row:
-                target_lang_code = row["target_language_code"]
-                target_lang_name = row["target_language_name"]
+    async with db_pool.acquire() as conn:
+        settings = await ensure_settings(conn, session_id)
 
-    if not target_lang_code:
-        messages = [
-            {"role": "system", "content": SETUP_SYSTEM_PROMPT},
-            {"role": "user", "content": request.message}
-        ]
-    else:
-        # --- РЕЖИМ 2: Строгий перевод ---
-        # Проверяем, состоит ли сообщение из одного слова (убираем пробелы и знаки препинания)
-        cleaned_message = request.message.strip().replace('.', '').replace(',', '').replace('!', '').replace('?', '')
-        is_single_word = len(cleaned_message.split()) == 1
+    target_lang_name = settings["target_language_name"] or DEFAULT_LANGUAGE_NAME
+    recent_summary = await build_recent_summary(session_id)
 
-        if is_single_word:
-            # Промпт для одного слова (словарь)
-            system_content = get_single_word_prompt(target_lang_name, target_lang_code)
-        else:
-            # Обычный промпт для предложений
-            system_content = get_translation_prompt(target_lang_name, target_lang_code)
-
-        messages = [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": request.message}
-        ]
-
-    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
-    payload = {
-        "model": MODEL_NAME,
-        "messages": messages,
-        "response_format": {"type": "json_object"}
-    }
+    system_content = get_translation_prompt(target_lang_name, USER_LEVEL, recent_summary)
+    messages = [
+        {"role": "system", "content": system_content},
+        {"role": "user", "content": request.message}
+    ]
 
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload,
-                                         timeout=60.0)
-            response.raise_for_status()
-            data = response.json()
-
-            raw_text = data["choices"][0]["message"]["content"].strip()
-            parsed = json.loads(raw_text)
-
-            source_lang_name = parsed.get("source_language_name", "")
-
-            if not target_lang_code:
-                ai_reply = parsed.get("reply", "Ошибка обработки.")
-                detected_lang_code = parsed.get("target_language_code")
-                detected_lang_name = parsed.get("target_language_name")
-
-                if detected_lang_code and db_pool:
-                    async with db_pool.acquire() as conn:
-                        await conn.execute(
-                            "INSERT INTO user_settings (session_id, target_language_code, target_language_name, proficiency_level) VALUES ($1, $2, $3, NULL) ON CONFLICT (session_id) DO UPDATE SET target_language_code = $2, target_language_name = $3, proficiency_level = NULL",
-                            session_id, detected_lang_code, detected_lang_name
-                        )
-                    # Обновляем переменную, чтобы передать на фронтенд, что язык теперь выбран
-                    target_lang_code = detected_lang_code
-            else:
-                ai_reply = parsed.get("translation", "Ошибка перевода.")
-
-        if db_pool:
-            async with db_pool.acquire() as conn:
-                await conn.execute(
-                    "INSERT INTO chat_history (session_id, role, content, source_language) VALUES ($1, $2, $3, $4)",
-                    session_id, "user", request.message, source_lang_name
-                )
-                await conn.execute(
-                    "INSERT INTO chat_history (session_id, role, content) VALUES ($1, $2, $3)",
-                    session_id, "assistant", ai_reply
-                )
-
-        # Возвращаем target_lang_code (он будет null, если бот спросил про язык)
-        return {"session_id": session_id_str, "reply": ai_reply, "source_language": source_lang_name,
-                "target_language_code": target_lang_code}
-
+        data = await call_openrouter(messages)
+        raw_text = data["choices"][0]["message"]["content"].strip()
+        parsed = json.loads(raw_text)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/lesson")
-async def mini_lesson(request: LessonRequest, req: Request):
-    if not OPENROUTER_API_KEY:
-        raise HTTPException(status_code=500, detail="OpenRouter API Key not configured")
-
-    session_id_str = get_session_id(req)
-    session_id = uuid.UUID(session_id_str)
-
-    target_lang_name = "иностранный"
-    proficiency_level = None
-
-    if db_pool:
-        async with db_pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT target_language_name, proficiency_level FROM user_settings WHERE session_id = $1", session_id)
-            if row:
-                target_lang_name = row["target_language_name"]
-                proficiency_level = row["proficiency_level"]
-
-    # Заголовки вынесены наверх, чтобы они были доступны в обоих режимах
-    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
-
-    # --- РЕЖИМ 1: Уровень еще не определен (Генерация проверочного текста) ---
-    if proficiency_level is None:
-        system_prompt = get_assessment_prompt(target_lang_name, request.user_text, request.ai_text)
-        payload = {
-            "model": MODEL_NAME,
-            "messages": [{"role": "system", "content": system_prompt}],
-            "response_format": {"type": "json_object"}
-        }
-
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers,
-                                             json=payload, timeout=60.0)
-                response.raise_for_status()
-                data = response.json()
-                parsed = json.loads(data["choices"][0]["message"]["content"].strip())
-                texts = parsed.get("texts", ["", "Ошибка генерации.", "", "", "", "", ""])
-                # Возвращаем массив текстов на фронтенд
-                return {"action": "assess", "texts": texts}
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-
-    # --- РЕЖИМ 2: Обычный мини-урок ---
-    question_or_phrase = [('Ответь', 'Question'),('Переведи', 'Phrase')][random.choice([0, 1])]
-    # НОВОЕ: Если пришел флаг use_history, берем историю из БД
-    if request.use_history and db_pool:
-        async with db_pool.acquire() as conn:
-            # Берем последние 12 сообщений ВКЛЮЧАЯ уроки и оценки
-            rows = await conn.fetch(
-                "SELECT role, content FROM chat_history WHERE session_id = $1 ORDER BY created_at DESC LIMIT 12",
-                session_id
-            )
-            # Формируем текст истории
-            history_log = "\n".join([f"{r['role']}: {r['content']}" for r in reversed(rows)])
-
-        system_prompt = get_lesson_from_history_prompt(target_lang_name, proficiency_level, history_log,
-                                                       question_or_phrase)
-    else:
-        system_prompt = get_lesson_prompt(target_lang_name, proficiency_level, request.user_text, request.ai_text,
-                                          question_or_phrase)
-
-    payload = {
-        "model": MODEL_NAME,
-        "messages": [{"role": "system", "content": system_prompt}],
-        "response_format": {"type": "json_object"}
-    }
-
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload,
-                                         timeout=60.0)
-            response.raise_for_status()
-            data = response.json()
-            parsed = json.loads(data["choices"][0]["message"]["content"].strip())
-            lesson_text = parsed.get("lesson_text", "Не удалось создать урок.")
-
-            if db_pool:
-                async with db_pool.acquire() as conn:
-                    # 1. Сохраняем урок в историю чата, чтобы пользователь его видел
-                    await conn.execute(
-                        "INSERT INTO chat_history (session_id, role, content, is_lesson) VALUES ($1, $2, $3, TRUE)",
-                        session_id, "assistant", lesson_text
-                    )
-                    new_level = min(100, proficiency_level + 5)
-                    await conn.execute("UPDATE user_settings SET proficiency_level = $1 WHERE session_id = $2",
-                                       new_level, session_id)
-
-            return {"action": "lesson", "lesson": lesson_text}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-class SetLevelRequest(BaseModel):
-    level: str  # "0", "A1", "A2", "B1", "B2", "C1", "C2"
-
-
-class CheckLessonRequest(BaseModel):
-    lesson_text: str
-    user_answer: str
-
-
-@app.post("/api/check_lesson")
-async def check_lesson(request: CheckLessonRequest, req: Request):
-    if not OPENROUTER_API_KEY:
-        raise HTTPException(status_code=500, detail="OpenRouter API Key not configured")
-
-    session_id_str = get_session_id(req)
-    session_id = uuid.UUID(session_id_str)
-
-    system_prompt = get_lesson_evaluation_prompt(request.lesson_text, request.user_answer)
-
-    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
-    payload = {
-        "model": MODEL_NAME,
-        "messages": [{"role": "system", "content": system_prompt}],
-        "response_format": {"type": "json_object"}
-    }
-
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload,
-                                         timeout=60.0)
-            response.raise_for_status()
-            data = response.json()
-            raw_text = data["choices"][0]["message"]["content"].strip()
-
-            parsed = json.loads(raw_text)
-            grade = parsed.get("grade", "Ошибка")
-            explanation = parsed.get("explanation", "Нет пояснения.")
-            correct_answer = parsed.get("correct_answer", "")
-
-        # Формируем текст для сохранения в БД (как JSON строку)
-        eval_data = {
-            "grade": grade,
-            "explanation": explanation,
-            "correct_answer": correct_answer
-        }
-        eval_json_str = json.dumps(eval_data, ensure_ascii=False)
-
-        # Формируем текст для отображения в пузыре ИИ
-        if grade == "Не понятно":
-            ai_reply = f"Правильный ответ:\n\n{correct_answer}"
-        elif grade == "Идеально":
-            ai_reply = "Идеально! 🎉"
-        else:
-            ai_reply = grade
-
-        if db_pool:
-            async with db_pool.acquire() as conn:
-                await conn.execute(
-                    "INSERT INTO chat_history (session_id, role, content) VALUES ($1, $2, $3)",
-                    session_id, "user", request.user_answer
-                )
-                await conn.execute(
-                    "INSERT INTO chat_history (session_id, role, content, is_evaluation) VALUES ($1, $2, $3, TRUE)",
-                    session_id, "assistant", eval_json_str
-                )
-
-        return {
-            "grade": grade,
-            "explanation": explanation,
-            "correct_answer": correct_answer,
-            "ai_reply": ai_reply
-        }
-
-    except Exception as e:
-        print(f"Check Lesson Error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/upload_pdf")
-async def upload_pdf(file: UploadFile = File(...), req: Request = None):
-    if not OPENROUTER_API_KEY:
-        raise HTTPException(status_code=500, detail="OpenRouter API Key not configured")
-
-    session_id_str = get_session_id(req)
-    session_id = uuid.UUID(session_id_str)
-
-    # 1. Читаем PDF
-    contents = await file.read()
-    reader = PdfReader(io.BytesIO(contents))
-
-    extracted_text = ""
-    for page in reader.pages:
-        extracted_text += page.extract_text() + "\n"
-
-    extracted_text = extracted_text.strip()
-    if not extracted_text:
-        raise HTTPException(status_code=400, detail="Не удалось извлечь текст или файл пуст.")
-
-    # 2. Сохраняем ОРИГИНАЛЬНЫЙ текст в базу данных
-    if db_pool:
-        async with db_pool.acquire() as conn:
-            await conn.execute(
-                "INSERT INTO documents (session_id, filename, original_text) VALUES ($1, $2, $3)",
-                session_id, file.filename, extracted_text
-            )
-
-    # 3. Разбиваем текст на части (по 2000 символов)
-    chunk_size = 2000
-    chunks = [extracted_text[i:i + chunk_size] for i in range(0, len(extracted_text), chunk_size)]
-    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
-
-    # 4. Создаем генератор для потоковой передачи
-    async def translate_stream():
-        full_translation = ""
-        # Используем один клиент для всех запросов
-        async with httpx.AsyncClient() as client:
-            for i, chunk in enumerate(chunks):
-                system_prompt = """You are a professional translator. Translate the following part of a document to Russian. 
-                Output only the translated text without any markdown or comments."""
-
-                payload = {
-                    "model": MODEL_NAME,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": chunk}
-                    ]
-                }
-
-                try:
-                    response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers,
-                                                 json=payload, timeout=60.0)
-                    response.raise_for_status()
-                    data = response.json()
-                    translated_chunk = data["choices"][0]["message"]["content"].strip()
-                    full_translation += translated_chunk + "\n"
-
-                    # Отправляем часть перевода на фронтенд
-                    yield translated_chunk + "\n"
-                except Exception as e:
-                    yield f"\n[Ошибка перевода части {i + 1}]\n"
-
-        # 5. После завершения перевода сохраняем весь перевод в историю чата
-        if db_pool:
-            async with db_pool.acquire() as conn:
-                user_msg = f"📄 Загружен файл: {file.filename}"
-                await conn.execute(
-                    "INSERT INTO chat_history (session_id, role, content) VALUES ($1, $2, $3)",
-                    session_id, "user", user_msg
-                )
-                await conn.execute(
-                    "INSERT INTO chat_history (session_id, role, content) VALUES ($1, $2, $3)",
-                    session_id, "assistant", full_translation
-                )
-
-    # Возвращаем потоковый ответ
-    return StreamingResponse(translate_stream(), media_type="text/plain")
-
-@app.post("/api/set_level")
-async def set_level(request: SetLevelRequest, req: Request):
-    session_id_str = get_session_id(req)
-    session_id = uuid.UUID(session_id_str)
-
-    level_map = {
-        "0": 0, "A1": 10, "A2": 25, "B1": 40, "B2": 60, "C1": 80, "C2": 95
-    }
-    proficiency_level = level_map.get(request.level, 0)
-
-    if db_pool:
-        async with db_pool.acquire() as conn:
-            await conn.execute("UPDATE user_settings SET proficiency_level = $1 WHERE session_id = $2",
-                               proficiency_level, session_id)
-
-    return {"status": "ok"}
-
-
-@app.post("/api/abandon_lesson")
-async def abandon_lesson(req: Request):
-    session_id_str = get_session_id(req)
-    session_id = uuid.UUID(session_id_str)
-
-    if db_pool:
-        async with db_pool.acquire() as conn:
-            # Находим последнее сообщение
-            last_row = await conn.fetchrow(
-                "SELECT id, is_lesson, content FROM chat_history WHERE session_id = $1 ORDER BY created_at DESC LIMIT 1",
-                session_id
-            )
-            # Если это урок, удаляем его из чата и сохраняем в логи
-            if last_row and last_row["is_lesson"]:
-                await conn.execute("DELETE FROM chat_history WHERE id = $1", last_row["id"])
-                await conn.execute(
-                    "INSERT INTO lesson_logs (session_id, content) VALUES ($1, $2)",
-                    session_id, last_row["content"]
-                )
-
-    return {"status": "ok"}
-
-
-# Модель, поддерживающая аудио (DeepSeek этого не умеет)
-# Исправленное название модели (на OpenRouter она называется так)
-AUDIO_MODEL_NAME = "gemini-2.5-flash"
-
-
-@app.post("/api/audio_translate")
-async def audio_translate(file: UploadFile = File(...), req: Request = None):
-    if not OPENROUTER_API_KEY:
-        raise HTTPException(status_code=500, detail="OpenRouter API Key not configured")
-
-    session_id_str = get_session_id(req)
-    session_id = uuid.UUID(session_id_str)
-
-    target_lang_name = "Русский"
-    if db_pool:
-        async with db_pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT target_language_name FROM user_settings WHERE session_id = $1",
-                                      session_id)
-            if row:
-                target_lang_name = row["target_language_name"]
-
-    # 1. Читаем аудиофайл и кодируем в Base64
-    contents = await file.read()
-    base64_audio = base64.b64encode(contents).decode('utf-8')
-
-    # Жестко задаем webm, так как MediaRecorder обычно пишет в нем
-    mime_type = 'audio/webm'
-    data_uri = f"data:{mime_type};base64,{base64_audio}"
-
-    # 2. Формируем промпт для перевода
-    prompt_text = f"""You are a professional translator. Listen to the audio. 
-    Translate it to Russian.
-    If the user speaks in Russian, translate it to {target_lang_name}.
-    Output strictly only the translated text without any comments, markdown, or quotes."""
-
-    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
-    payload = {
-        "model": AUDIO_MODEL_NAME,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt_text},
-                    {"type": "image_url", "image_url": {"url": data_uri}}
-                ]
-            }
-        ]
-    }
-
-    try:
-        # 3. Отправляем запрос в OpenRouter
-        async with httpx.AsyncClient() as client:
-            response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload,
-                                         timeout=60.0)
-
-            # Если OpenRouter вернул ошибку (например, 400 Bad Request), читаем текст ошибки
-            if response.status_code != 200:
-                error_text = response.text
-                print(f"OpenRouter Audio Error: {error_text}")
-                raise HTTPException(status_code=response.status_code, detail=f"OpenRouter API Error: {error_text}")
-
-            data = response.json()
-
-            # Проверяем, не вернул ли OpenRouter пустой ответ
-            if "choices" not in data or not data["choices"]:
-                print(f"OpenRouter Empty Response: {data}")
-                raise HTTPException(status_code=500, detail="ИИ не вернул ответ для этого аудио.")
-
-            ai_reply = data["choices"][0]["message"]["content"].strip()
-
-        # 4. Сохраняем в историю чата
-        if db_pool:
-            async with db_pool.acquire() as conn:
-                await conn.execute(
-                    "INSERT INTO chat_history (session_id, role, content, source_language) VALUES ($1, $2, $3, $4)",
-                    session_id, "user", "🎤 Голосовое сообщение", "audio"
-                )
-                await conn.execute(
-                    "INSERT INTO chat_history (session_id, role, content) VALUES ($1, $2, $3)",
-                    session_id, "assistant", ai_reply
-                )
-
-        return {"reply": ai_reply, "source_language": "Голос"}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Audio Processing Error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/image_translate")
-async def image_translate(file: UploadFile = File(...), req: Request = None):
-    if not OPENROUTER_API_KEY:
-        raise HTTPException(status_code=500, detail="OpenRouter API Key not configured")
-
-    session_id_str = get_session_id(req)
-    session_id = uuid.UUID(session_id_str)
-
-    # Получаем язык пользователя
-    # target_lang_name = "Русский"
-    # if db_pool:
-    #     async with db_pool.acquire() as conn:
-    #         row = await conn.fetchrow("SELECT target_language_name FROM user_settings WHERE session_id = $1", session_id)
-    #         if row:
-    #             target_lang_name = row["target_language_name"]
-
-    # 1. Читаем изображение и кодируем в Base64
-    contents = await file.read()
-    base64_image = base64.b64encode(contents).decode('utf-8')
-    mime_type = file.content_type or 'image/jpeg'
-    data_uri = f"data:{mime_type};base64,{base64_image}"
-
-    # 2. Формируем промпт для распознавания и перевода
-    prompt_text = f"""You are a professional OCR tool and translator. Extract all visible text from the image.
-    Translate it to Russian.
-    Output strictly only the translated text without any comments, markdown, or quotes. If there is no text, reply with "На изображении нет текста"."""
-
-    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
-    payload = {
-        "model": AUDIO_MODEL_NAME, # Используем ту же модель (gemini-2.5-flash-lite), она отлично читает текст
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt_text},
-                    {"type": "image_url", "image_url": {"url": data_uri}}
-                ]
-            }
-        ]
-    }
-
-    try:
-        # 3. Отправляем запрос в OpenRouter
-        async with httpx.AsyncClient() as client:
-            response = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=60.0)
-            response.raise_for_status()
-            data = response.json()
-            ai_reply = data["choices"][0]["message"]["content"].strip()
-
-        # 4. Сохраняем в историю чата
-        if db_pool:
-            async with db_pool.acquire() as conn:
-                await conn.execute(
-                    "INSERT INTO chat_history (session_id, role, content, source_language) VALUES ($1, $2, $3, $4)",
-                    session_id, "user", "📷 Фото для перевода", "image"
-                )
-                await conn.execute(
-                    "INSERT INTO chat_history (session_id, role, content) VALUES ($1, $2, $3)",
-                    session_id, "assistant", ai_reply
-                )
-
-        return {"reply": ai_reply, "source_language": "Фото"}
-
-    except Exception as e:
-        print(f"Image Processing Error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        handle_llm_error(e, "Translation Error")
+        return
+
+    translation = parsed.get("translation", "") or ""
+
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO chat_history (session_id, role, content) VALUES ($1, 'user', $2)",
+            session_id, request.message
+        )
+        await conn.execute(
+            "INSERT INTO chat_history (session_id, role, content) VALUES ($1, 'assistant', $2)",
+            session_id, translation
+        )
+
+    return {"session_id": session_id_str, "translation": translation}
 
 
 @app.get("/")
 def read_root():
     return {"status": "Backend is running"}
-

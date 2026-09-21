@@ -129,6 +129,7 @@ source .venv/bin/activate
 
 ```bash
 pip install -r requirements.txt
+
 ```
 
 Создайте переменные окружения:
