@@ -14,6 +14,47 @@ function loadCachedMessages() {
   return [];
 }
 
+function Typewriter() {
+  const phrases = [
+    "Отправьте текст или фото для перевода",
+    "Или ответьте какой у вас уровень испанского"
+  ];
+  const [text, setText] = useState("");
+  const [phraseIndex, setPhraseIndex] = useState(0);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [speed, setSpeed] = useState(100);
+
+  useEffect(() => {
+    const currentPhrase = phrases[phraseIndex];
+    let timer;
+
+    if (!isDeleting && text === currentPhrase) {
+      timer = setTimeout(() => setIsDeleting(true), 2000); // Пауза после печати
+    } else if (isDeleting && text === "") {
+      setIsDeleting(false);
+      setPhraseIndex((prev) => (prev + 1) % phrases.length);
+    } else {
+      timer = setTimeout(() => {
+        setText(prev => {
+          if (isDeleting) {
+            return currentPhrase.substring(0, prev.length - 1);
+          } else {
+            return currentPhrase.substring(0, prev.length + 1);
+          }
+        });
+      }, isDeleting ? speed / 2 : speed);
+    }
+
+    return () => clearTimeout(timer);
+  }, [text, isDeleting, phraseIndex]);
+
+  return (
+    <div className="empty-state">
+      <span className="typewriter">{text}<span className="cursor">|</span></span>
+    </div>
+  );
+}
+
 function App() {
   const [messages, setMessages] = useState(loadCachedMessages);
   const [input, setInput] = useState('');
@@ -107,9 +148,7 @@ function App() {
 
     let imagePreview = null;
     if (file) {
-      if (file.size > 5 * 1024 * 1024) { alert("Файл слишком большой (макс 5МБ)."); setIsLoading(false); return; }
-      if (!file.type.startsWith("image/")) { alert("Можно отправлять только изображения."); setIsLoading(false); return; }
-
+      if (file.size > 5 * 1024 * 1024) { alert("Файл слишком большой."); setIsLoading(false); return; }
       imagePreview = await new Promise((resolve) => {
         const reader = new FileReader();
         reader.onload = (e) => resolve(e.target.result);
@@ -140,10 +179,19 @@ function App() {
         localStorage.setItem('translator_session_id', data.session_id);
       }
 
+      // ВАЖНО: Заменяем локальный Base64 на URL из Supabase, чтобы выжить после refresh
+      if (data.media_url) {
+        newMessages[newMessages.length - 1] = {
+          ...newMessages[newMessages.length - 1],
+          image: null, // Очищаем Base64, чтобы не висел в памяти
+          media_url: data.media_url // Сохраняем URL
+        };
+      }
+
       setMessages([...newMessages, { role: 'assistant', content: data.translation }]);
     } catch (error) {
       console.error('Ошибка отправки:', error);
-      setMessages([...newMessages, { role: 'assistant', content: 'Не получилось отправить. Попробуйте позже.', isError: true }]);
+      setMessages([...newMessages, { role: 'assistant', content: 'Не получилось отправить.', isError: true }]);
     } finally {
       setIsLoading(false);
     }
@@ -176,21 +224,23 @@ function App() {
 
       {messages.length > 0 ? (
         <div className="chat-container" ref={chatContainerRef}>
-                    {messages.map((msg, idx) => {
-            // Статичный наклон для Polaroid (чтобы не прыгал при ререндере)
+          {messages.map((msg, idx) => {
             const rotations = ['-2deg', '1.5deg', '-1deg', '2deg'];
             const rotation = rotations[idx % 4];
 
+            // ВАЖНО: Берем URL либо из загруженной истории (media_url), либо из локального Base64 (image)
+            const imageSrc = msg.media_url || msg.image;
+
             return (
               <div key={idx} className={`message-wrapper ${msg.role}`}>
-                {/* Если есть фото — рендерим Polaroid вне облачка */}
-                {msg.image && (
+                {/* Рендерим Polaroid, если есть фото */}
+                {imageSrc && (
                   <div className="polaroid" style={{ transform: `rotate(${rotation})` }}>
-                    <img src={msg.image} alt="Upload" />
+                    <img src={imageSrc} alt="Upload" />
                   </div>
                 )}
 
-                {/* Обычное текстовое сообщение рендерится, только если есть текст */}
+                {/* Текстовое сообщение */}
                 {msg.content && (
                   <div className={`message ${msg.role} ${msg.isError ? 'error-message' : ''}`}>
                     <div className="markdown-content">
@@ -210,11 +260,7 @@ function App() {
           )}
         </div>
       ) : (
-        !isLoading && (
-          <div className="empty-state">
-            <p>Введите текст или отправьте фото для перевода.</p>
-          </div>
-        )
+        !isLoading && <Typewriter />
       )}
 
       <div className="input-area">

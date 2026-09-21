@@ -675,3 +675,20 @@ body::-webkit-scrollbar-thumb:hover {
 .polaroid:hover {
   transform: rotate(0deg) scale(1.02) !important;
 }
+
+/* Стили для печатной машинки */
+.typewriter {
+  font-size: 1rem;
+  color: #999;
+  text-align: center;
+  min-height: 20px;
+}
+.cursor {
+  animation: blink 1s infinite;
+  color: #007aff;
+  font-weight: 100;
+}
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
