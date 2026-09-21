@@ -9,8 +9,8 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.ico', 'apple-touch-icon.png'],
       manifest: {
-        name: 'ИИ Переводчик и Ассистент',
-        short_name: 'Переводчик',
+        name: 'TraChat: ИИ Переводчик и Ассистент',
+        short_name: 'TraChat',
         description: 'Перевод текста, фото, PDF и голосовых сообщений с мини-уроками',
         theme_color: '#ffffff',
         background_color: '#ffffff',
