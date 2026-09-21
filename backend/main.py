@@ -213,27 +213,44 @@ async def process_image(file: UploadFile, session_id: uuid.UUID) -> dict:
     return {"translation": translation, "media_url": media_url}
 
 
+import traceback
+
 @app.post("/api/message")
 async def message(req: Request, text: Optional[str] = Form(None), file: UploadFile = File(None)):
-    if not OPENROUTER_API_KEY: raise HTTPException(status_code=500, detail="API Key not configured")
-    if not db_pool: raise HTTPException(status_code=503, detail="База данных не подключена.")
+    try:
+        if not OPENROUTER_API_KEY:
+            raise HTTPException(status_code=500, detail="API Key not configured")
 
-    session_id_str = get_session_id(req)
-    session_id = uuid.UUID(session_id_str)
+        if not db_pool:
+            raise HTTPException(status_code=503, detail="База данных не подключена.")
 
-    if file:
-        if file.content_type and file.content_type.startswith("image/"):
-            result = await process_image(file, session_id)
-            return {"session_id": session_id_str, "translation": result["translation"],
-                    "media_url": result["media_url"]}
+        session_id_str = get_session_id(req)
+        session_id = uuid.UUID(session_id_str)
+
+        if file:
+            if file.content_type and file.content_type.startswith("image/"):
+                result = await process_image(file, session_id)
+                return {
+                    "session_id": session_id_str,
+                    "translation": result["translation"],
+                    "media_url": result["media_url"],
+                }
+            else:
+                raise HTTPException(status_code=400, detail="Только изображения.")
+
+        elif text:
+            result = await process_text(text, session_id)
+            return {
+                "session_id": session_id_str,
+                "translation": result["translation"],
+            }
+
         else:
-            raise HTTPException(status_code=400, detail="Только изображения.")
-    elif text:
-        result = await process_text(text, session_id)
-        return {"session_id": session_id_str, "translation": result["translation"]}
-    else:
-        raise HTTPException(status_code=400, detail="Сообщение пусто.")
+            raise HTTPException(status_code=400, detail="Сообщение пусто.")
 
+    except Exception:
+        traceback.print_exc()
+        raise
 
 @app.get("/api/history")
 async def get_history(req: Request):
