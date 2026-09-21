@@ -29,6 +29,7 @@ function App() {
   const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
 
   // Синхронизация истории с сервером
+  // Синхронизация с сервером: БД — источник истины.
   useEffect(() => {
     if (!sessionId) return;
     const syncHistory = async () => {
@@ -38,7 +39,12 @@ function App() {
         });
         if (response.ok) {
           const data = await response.json();
-          if (data.history) setMessages(data.history);
+          if (data.history) {
+            // Полностью заменяем локальную историю актуальной из БД
+            setMessages(data.history);
+            // Принудительно обновляем localStorage актуальной историей
+            localStorage.setItem('translator_chat_history', JSON.stringify(data.history));
+          }
         }
       } catch (error) {
         console.error('Ошибка синхронизации истории:', error);
@@ -170,18 +176,31 @@ function App() {
 
       {messages.length > 0 ? (
         <div className="chat-container" ref={chatContainerRef}>
-          {messages.map((msg, idx) => (
-            <div key={idx} className={`message-wrapper ${msg.role}`}>
-              <div className={`message ${msg.role} ${msg.isError ? 'error-message' : ''}`}>
-                <div className="markdown-content">
-                  {msg.image && (
-                    <img src={msg.image} alt="Upload" style={{ maxWidth: '100%', borderRadius: '12px', marginBottom: '8px' }} />
-                  )}
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content || ''}</ReactMarkdown>
-                </div>
+                    {messages.map((msg, idx) => {
+            // Статичный наклон для Polaroid (чтобы не прыгал при ререндере)
+            const rotations = ['-2deg', '1.5deg', '-1deg', '2deg'];
+            const rotation = rotations[idx % 4];
+
+            return (
+              <div key={idx} className={`message-wrapper ${msg.role}`}>
+                {/* Если есть фото — рендерим Polaroid вне облачка */}
+                {msg.image && (
+                  <div className="polaroid" style={{ transform: `rotate(${rotation})` }}>
+                    <img src={msg.image} alt="Upload" />
+                  </div>
+                )}
+
+                {/* Обычное текстовое сообщение рендерится, только если есть текст */}
+                {msg.content && (
+                  <div className={`message ${msg.role} ${msg.isError ? 'error-message' : ''}`}>
+                    <div className="markdown-content">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                    </div>
+                  </div>
+                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
           {isLoading && (
             <div className="message-wrapper assistant">
               <div className="message assistant typing">

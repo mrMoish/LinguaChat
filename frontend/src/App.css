@@ -652,3 +652,26 @@ body::-webkit-scrollbar-thumb:hover {
   text-align: center;
   white-space: nowrap;
 }
+
+/* Стиль Polaroid для фотографий пользователя */
+.polaroid {
+  background-color: #fff;
+  padding: 10px 10px 30px 10px; /* Белая рамка, снизу шире (Polaroid) */
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+  max-width: 220px; /* Ограничиваем размер фото */
+  margin-bottom: 12px;
+  align-self: flex-end; /* Прижимаем к правому краю (как сообщение юзера) */
+  transition: transform 0.3s ease;
+}
+
+.polaroid img {
+  width: 100%;
+  height: auto; /* Сохраняем пропорции */
+  display: block;
+  object-fit: contain; /* Не обрезаем фото */
+}
+
+/* Небольшой хук, чтобы при навеведении наклон выравнивался (приятно для глаз) */
+.polaroid:hover {
+  transform: rotate(0deg) scale(1.02) !important;
+}
