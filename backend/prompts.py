@@ -1,12 +1,18 @@
 def get_translation_prompt(target_lang_name, user_level, recent_summary):
-    return f"""
-Определи язык входного текста.
+    return f"""Translate non-Russian text into Russian; Translate Russian text into {target_lang_name}.
 
-- Если входной текст НЕ на русском языке, переведи его НА РУССКИЙ.
-- Если входной текст НА РУССКОМ языке, переведи его НА {target_lang_name}.
-
-Верни СТРОГИЙ JSON без markdown-обёртки:
+Return STRICT JSON without markdown wrapping:
 {{
-  "translation": "результат"
+"translation": "your response"
+}}
+"""
+
+# Explain in Russian what is shown in the image
+def get_image_analysis_prompt(target_language):
+    return f"""Translate it into Russian.
+
+Return STRICT JSON without markdown wrapping:
+{{
+  "translation": "your response"
 }}
 """

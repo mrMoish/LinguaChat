@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useLayoutEffect } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import './App.css';
@@ -21,14 +21,14 @@ function App() {
   const [sessionId, setSessionId] = useState(() => localStorage.getItem('translator_session_id') || null);
 
   const chatContainerRef = useRef(null);
-  const isFirstScrollRef = useRef(true);
+  const fileInputRef = useRef(null);
 
   const [deferredPrompt, setDeferredPrompt] = useState(null);
   const [isAppInstalled, setIsAppInstalled] = useState(false);
 
   const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
 
-  // Фоновая синхронизация с сервером — только если сессия уже существует.
+  // Синхронизация истории с сервером
   useEffect(() => {
     if (!sessionId) return;
     const syncHistory = async () => {
@@ -38,9 +38,7 @@ function App() {
         });
         if (response.ok) {
           const data = await response.json();
-          if (data.history) {
-            setMessages(data.history);
-          }
+          if (data.history) setMessages(data.history);
         }
       } catch (error) {
         console.error('Ошибка синхронизации истории:', error);
@@ -50,29 +48,31 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Мгновенно ставим правильную позицию скролла ДО того, как браузер отрисует кадр —
-  // без этого при обновлении страницы виден скачок: сначала верх, потом рывок вниз.
-  useLayoutEffect(() => {
-    window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'auto' });
-  }, []);
-
+  // Скролл вниз
   useEffect(() => {
     if (messages.length > 0) {
-      localStorage.setItem('translator_chat_history', JSON.stringify(messages.filter(m => !m.isError)));
+      try {
+        // ВАЖНО: Убираем картинки (Base64) перед сохранением в localStorage,
+        // чтобы не превысить лимит 5МБ и приложение не упало с белым экраном.
+        const cleanMessages = messages.filter(m => !m.isError).map(m => {
+          const { image, ...rest } = m; // Вырезаем поле image
+          return rest;
+        });
+        localStorage.setItem('translator_chat_history', JSON.stringify(cleanMessages));
+      } catch (e) {
+        console.error("Ошибка сохранения в localStorage (возможно, превышен лимит)", e);
+      }
+
+      const timer = setTimeout(() => {
+        window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
+      }, 100);
+      return () => clearTimeout(timer);
     }
-    if (isFirstScrollRef.current) {
-      // Позиция уже выставлена мгновенно в useLayoutEffect выше — плавный скролл здесь не нужен.
-      isFirstScrollRef.current = false;
-      return;
-    }
-    const timer = setTimeout(() => {
-      window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
-    }, 100);
-    return () => clearTimeout(timer);
   }, [messages, isLoading]);
 
+  // PWA логика
   useEffect(() => {
-    if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true) {
+    if (window.matchMedia('(display-mode: standalone)').matches) {
       setIsAppInstalled(true);
       return;
     }
@@ -94,18 +94,37 @@ function App() {
     setDeferredPrompt(null);
   };
 
-  const sendMessage = async (text) => {
-    if (!text.trim() || isLoading) return;
+  // Универсальная функция отправки сообщения (Текст или Фото)
+  const sendMessage = async (text, file) => {
+    if (isLoading || (!text && !file)) return;
     setIsLoading(true);
-    const userMessage = { role: 'user', content: text };
+
+    let imagePreview = null;
+    if (file) {
+      if (file.size > 5 * 1024 * 1024) { alert("Файл слишком большой (макс 5МБ)."); setIsLoading(false); return; }
+      if (!file.type.startsWith("image/")) { alert("Можно отправлять только изображения."); setIsLoading(false); return; }
+
+      imagePreview = await new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = (e) => resolve(e.target.result);
+        reader.readAsDataURL(file);
+      });
+    }
+
+    const userMessage = { role: 'user', content: text || '', image: imagePreview };
     const newMessages = [...messages, userMessage];
     setMessages(newMessages);
+    setInput('');
+
+    const formData = new FormData();
+    if (text) formData.append('text', text);
+    if (file) formData.append('file', file);
 
     try {
       const response = await fetch(`${backendUrl}/api/message`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(sessionId ? { 'X-Session-Id': sessionId } : {}) },
-        body: JSON.stringify({ message: text })
+        headers: { ...(sessionId ? { 'X-Session-Id': sessionId } : {}) },
+        body: formData
       });
       if (!response.ok) throw new Error('Network error');
       const data = await response.json();
@@ -116,10 +135,9 @@ function App() {
       }
 
       setMessages([...newMessages, { role: 'assistant', content: data.translation }]);
-      return data;
     } catch (error) {
       console.error('Ошибка отправки:', error);
-      setMessages([...newMessages, { role: 'assistant', content: 'Не получилось перевести. Попробуйте позже.', isError: true }]);
+      setMessages([...newMessages, { role: 'assistant', content: 'Не получилось отправить. Попробуйте позже.', isError: true }]);
     } finally {
       setIsLoading(false);
     }
@@ -127,9 +145,7 @@ function App() {
 
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
-    const text = input;
-    setInput('');
-    await sendMessage(text);
+    await sendMessage(input, null);
   };
 
   const handleKeyDown = (e) => {
@@ -158,12 +174,14 @@ function App() {
             <div key={idx} className={`message-wrapper ${msg.role}`}>
               <div className={`message ${msg.role} ${msg.isError ? 'error-message' : ''}`}>
                 <div className="markdown-content">
+                  {msg.image && (
+                    <img src={msg.image} alt="Upload" style={{ maxWidth: '100%', borderRadius: '12px', marginBottom: '8px' }} />
+                  )}
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content || ''}</ReactMarkdown>
                 </div>
               </div>
             </div>
           ))}
-
           {isLoading && (
             <div className="message-wrapper assistant">
               <div className="message assistant typing">
@@ -175,17 +193,34 @@ function App() {
       ) : (
         !isLoading && (
           <div className="empty-state">
-            <p>Введите текст на русском или английском — переведу.</p>
+            <p>Введите текст или отправьте фото для перевода.</p>
           </div>
         )
       )}
 
       <div className="input-area">
+        <input
+          type="file"
+          accept="image/*"
+          ref={fileInputRef}
+          style={{ display: 'none' }}
+          onChange={(e) => {
+            const file = e.target.files[0];
+            if (file) sendMessage(null, file);
+            e.target.value = null;
+          }}
+        />
+        <button className="action-btn" onClick={() => fileInputRef.current.click()} disabled={isLoading} aria-label="Прикрепить фото">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
+          </svg>
+        </button>
+
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Введите текст..."
+          placeholder="Сообщение..."
           rows={1}
         />
 
