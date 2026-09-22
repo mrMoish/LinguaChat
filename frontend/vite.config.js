@@ -9,8 +9,8 @@ export default defineConfig({
       registerType: 'autoUpdate', // Автоматически проверяет и применяет обновления
       includeAssets: ['favicon.ico', 'apple-touch-icon.png'],
       manifest: {
-        name: 'LinguaChat',
-        short_name: 'LinguaChat',
+        name: 'TraChat: AI Translator and Language Friend',
+        short_name: 'TraChat',
         description: 'AI Translator and Language Friend',
         theme_color: '#ffffff',
         background_color: '#ffffff',
