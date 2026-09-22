@@ -6,12 +6,12 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      registerType: 'autoUpdate',
+      registerType: 'autoUpdate', // Автоматически проверяет и применяет обновления
       includeAssets: ['favicon.ico', 'apple-touch-icon.png'],
       manifest: {
-        name: 'TraChat: ИИ Переводчик и Ассистент',
-        short_name: 'TraChat',
-        description: 'Перевод текста, фото, PDF и голосовых сообщений с мини-уроками',
+        name: 'LinguaChat',
+        short_name: 'LinguaChat',
+        description: 'AI Translator and Language Friend',
         theme_color: '#ffffff',
         background_color: '#ffffff',
         display: 'standalone',
@@ -32,32 +32,33 @@ export default defineConfig({
             src: 'pwa-512x512.png',
             sizes: '512x512',
             type: 'image/png',
-            purpose: 'any maskable' // Для красивой иконки на Android
+            purpose: 'any maskable'
           }
         ]
       },
       workbox: {
-        clientsClaim: true,    // Мгновенно активирует новую версию
-        skipWaiting: true,     // Не ждет закрытия вкладок для обновления
+        // КРИТИЧЕСКИ ВАЖНО ДЛЯ ОБНОВЛЕНИЙ PWA:
+        clientsClaim: true,
+        skipWaiting: true, // Принудительно активирует новый SW сразу
         runtimeCaching: [
           {
-            // Кэшируем запросы к бэкенду (Network First)
-            urlPattern: /^https:\/\/.*\.onrender\.com\/api\/.*/,
+            // HTML всегда грузим с сети (NetworkFirst), чтобы получить свежие ссылки на JS/CSS
+            urlPattern: ({ request }) => request.mode === 'navigate',
             handler: 'NetworkFirst',
             options: {
-              cacheName: 'api-cache',
-              networkTimeoutSeconds: 10
+              cacheName: 'html-cache',
+              networkTimeoutSeconds: 3
             }
           },
           {
-            // Кэшируем шрифты и стили (Cache First)
+            // Хэшированные ассеты кэшируем навсегда (CacheFirst), так как имя файла меняется при билде
             urlPattern: /\.(?:js|css|woff2?|png|jpg|jpeg|svg|gif)$/,
             handler: 'CacheFirst',
             options: {
               cacheName: 'assets-cache',
               expiration: {
                 maxEntries: 100,
-                maxAgeSeconds: 60 * 60 * 24 * 30
+                maxAgeSeconds: 60 * 60 * 24 * 30 // 30 дней
               }
             }
           }
@@ -66,9 +67,8 @@ export default defineConfig({
     })
   ],
   server: {
-    allowedHosts: true, // Разрешаем доступ через ngrok
     proxy: {
-      '/api': 'http://localhost:8000' // Обязательно оставляем прокси для бэкенда!
+      '/api': 'http://localhost:8000'
     }
   }
 })
