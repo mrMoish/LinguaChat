@@ -28,7 +28,7 @@ app.add_middleware(
     allow_headers=["*", "X-Session-Id"],
 )
 
-DEFAULT_LANGUAGE = "Spanish (Argentina)"
+DEFAULT_LANGUAGE = "Chinese"
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -37,8 +37,8 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 STORAGE_BUCKET = "chat-images"
 
-TEXT_MODEL = "deepseek/deepseek-chat"
-VISION_MODEL = "openai/gpt-5.6-luna"
+TEXT_MODEL = "openai/gpt-5.6-luna" # "deepseek/deepseek-chat"
+VISION_MODEL = "openai/gpt-5.6-luna" # google/gemini-2.0-flash-exp:free # google/gemini-2.5-flash-lite # google/gemini-3.8-flash
 
 db_pool = None
 
@@ -60,7 +60,7 @@ async def startup():
                 await conn.execute(
                     '''CREATE TABLE IF NOT EXISTS chat_history (id SERIAL PRIMARY KEY, session_id UUID NOT NULL, role VARCHAR(50) NOT NULL, content TEXT NOT NULL, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)''')
                 await conn.execute(
-                    '''CREATE TABLE IF NOT EXISTS user_settings (session_id UUID PRIMARY KEY, target_language_name VARCHAR(100) DEFAULT 'Spanish (Argentina)')''')
+                    '''CREATE TABLE IF NOT EXISTS user_settings (session_id UUID PRIMARY KEY, target_language_name VARCHAR(100) DEFAULT 'Chinese')''')
                 await conn.execute(
                     "ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS message_type VARCHAR(20) DEFAULT 'text'")
                 await conn.execute("ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS media_url TEXT")
@@ -133,22 +133,35 @@ async def upload_to_supabase(jpeg_bytes: bytes) -> str:
     return f"{SUPABASE_URL}/storage/v1/object/public/{STORAGE_BUCKET}/{file_name}"
 
 
-async def get_last_assistant_message(conn, session_id: uuid.UUID) -> Optional[str]:
-    row = await conn.fetchrow(
-        "SELECT content FROM chat_history WHERE session_id = $1 AND role = 'assistant' ORDER BY created_at DESC LIMIT 1",
-        session_id)
-    return row["content"] if row else None
+RECENT_HISTORY_LIMIT = 8  # сколько последних сообщений диалога передавать модели для определения намерения
+
+
+async def get_recent_history(conn, session_id: uuid.UUID, limit: int = RECENT_HISTORY_LIMIT):
+    """Последние сообщения диалога (в хронологическом порядке) — нужны, чтобы модель могла
+    определить, отвечает ли пользователь на предыдущий вопрос AI, а не только по языку сообщения."""
+    rows = await conn.fetch(
+        "SELECT role, content FROM chat_history WHERE session_id = $1 AND message_type = 'text' "
+        "ORDER BY created_at DESC LIMIT $2",
+        session_id, limit
+    )
+    return list(reversed(rows))
 
 
 async def process_text(text: str, session_id: uuid.UUID) -> dict:
     target_lang = await get_user_language(session_id)
     async with db_pool.acquire() as conn:
-        last_assistant_msg = await get_last_assistant_message(conn, session_id)
-    if not last_assistant_msg:
-        last_assistant_msg = "Какой у тебя уровень языка?"
+        history_rows = await get_recent_history(conn, session_id)
+
+    history_messages = [{"role": r["role"], "content": r["content"]} for r in history_rows]
+    if not history_messages:
+        # Первое сообщение в диалоге — своего последнего вопроса у AI ещё не было
+        history_messages = [{"role": "assistant", "content": "Какой у вас уровень китайского?"}]
+
+    print("history_messages: ", history_messages)
+    print('target_lang: ', target_lang)
     messages = [
         {"role": "system", "content": get_text_prompt(target_lang)},
-        {"role": "assistant", "content": last_assistant_msg},
+        *history_messages,
         {"role": "user", "content": [{"type": "text", "text": text}]}
     ]
     translation = await call_openrouter(messages, model=TEXT_MODEL)

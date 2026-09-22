@@ -50,7 +50,7 @@ function loadCachedMessages() {
 }
 
 function Typewriter() {
-  const phrases = ["Отправьте текст или фото для перевода", "Или какой у вас уровень испанского?"];
+  const phrases = ["Отправьте текст или фото для перевода", "Или какой у вас уровень китайского?"];
   const [text, setText] = useState("");
   const [phraseIndex, setPhraseIndex] = useState(0);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -406,13 +406,17 @@ function App() {
 
           {isSyncingHistory && (
             <div className="message-wrapper assistant">
-              <div className="message assistant typing"><span></span><span></span><span></span></div>
+              <div className="typing-dots">
+                <span></span><span></span><span></span>
+              </div>
             </div>
           )}
 
           {isLoading && (
             <div className="message-wrapper assistant">
-              <div className="message assistant typing"><span></span><span></span><span></span></div>
+              <div className="typing-dots">
+                <span></span><span></span><span></span>
+              </div>
             </div>
           )}
         </div>
