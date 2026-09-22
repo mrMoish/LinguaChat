@@ -8,61 +8,26 @@
   --icon-btn-color: #333333;
 }
 
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-}
+* { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
 
-/* Полоса прокрутки браузера */
-html {
-  scrollbar-width: thin;
-  scrollbar-color: #cccccc transparent;
+/* Скрытый скроллбар для мобильных */
+@media (max-width: 768px) {
+  body::-webkit-scrollbar { display: none; }
+  html { scrollbar-width: none; }
 }
+body::-webkit-scrollbar { width: 8px; }
+body::-webkit-scrollbar-track { background: transparent; }
+body::-webkit-scrollbar-thumb { background-color: #cccccc; border-radius: 4px; }
 
-body::-webkit-scrollbar {
-  width: 8px;
-}
+.app-container { position: relative; display: flex; flex-direction: column; min-height: 100dvh; max-width: 768px; margin: 0 auto; background-color: var(--bg-color); }
+.empty-state-app { height: 100dvh; justify-content: center; }
 
-body::-webkit-scrollbar-track {
-  background: transparent;
-}
 
-body::-webkit-scrollbar-thumb {
-  background-color: #cccccc;
-  border-radius: 4px;
-  border: 2px solid transparent;
-  background-clip: content-box;
-}
 
-body::-webkit-scrollbar-thumb:hover {
-  background-color: #bbbbbb;
-  background-clip: content-box;
-}
-
-/* Контейнер приложения */
-.app-container {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  min-height: 100vh;
-  min-height: 100dvh;
-  max-width: 768px;
-  margin: 0 auto;
-  background-color: var(--bg-color);
-}
-
-.empty-state-app {
-  height: 100vh;
-  height: 100dvh;
-  justify-content: center;
-}
-
-/* Кнопка Войти */
+/* Кнопка Войти (PWA) */
 .login-btn {
   position: fixed;
-  top: 15px;
+  top: calc(15px + env(safe-area-inset-top)); /* Учитываем системный статус бар */
   right: 15px;
   z-index: 100;
   background-color: #333333;
@@ -79,48 +44,41 @@ body::-webkit-scrollbar-thumb:hover {
   cursor: pointer;
   transition: background-color 0.2s;
 }
-
 .login-btn:hover { background-color: #555555; }
+/* Индикатор синхронизации */
+.sync-loader { position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%); display: flex; gap: 5px; z-index: 40; }
+.sync-loader span { width: 8px; height: 8px; background: #ccc; border-radius: 50%; animation: bounce 1s infinite ease-in-out; }
+.sync-loader span:nth-child(2) { animation-delay: 0.2s; }
+.sync-loader span:nth-child(3) { animation-delay: 0.4s; }
+
+/* Лёгкая тень под статус баром */
+.status-bar-shadow {
+  position: fixed;
+  top: -20px;
+  left: 0;
+  width: 100%;
+  height: 20px;
+  z-index: 5;
+  pointer-events: none;
+  box-shadow: 0 8px 25px -5px rgba(0, 0, 0, 0.40);
+}
 
 /* Диалоговое окно */
 .chat-container {
-  padding: 70px 1rem 80px 1rem; /* Уменьшили нижний отступ с 120px до 80px */
+  padding-top: calc(15px + env(safe-area-inset-top)); /* Чат начинается сразу под статус баром */
+  padding-bottom: calc(100px + env(safe-area-inset-bottom));
+  padding-left: 1rem;
+  padding-right: 1rem;
   display: flex;
   flex-direction: column;
   width: 100%;
 }
-
-/* Обертка сообщения */
-.message-wrapper {
-  display: flex;
-  flex-direction: column;
-  margin-bottom: 1.5rem;
-  width: 100%;
-}
+.message-wrapper { display: flex; flex-direction: column; margin-bottom: 1.5rem; width: 100%; }
 .message-wrapper.user { align-items: flex-end; }
 .message-wrapper.assistant { align-items: flex-start; }
 
-/* Сообщения */
-.message.user {
-  max-width: 85%;
-  padding: 1.2rem 1.5rem;
-  background-color: var(--user-bubble);
-  color: var(--text-color);
-  border-radius: 22px;
-  border-bottom-right-radius: 6px;
-  word-wrap: break-word;
-  white-space: pre-wrap;
-  line-height: 1.5;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-}
-
-.message.assistant {
-  max-width: 100%;
-  color: var(--text-color);
-  word-wrap: break-word;
-  white-space: pre-wrap;
-  line-height: 1.6;
-}
+.message.user { max-width: 85%; padding: 1.2rem 1.5rem; background-color: var(--user-bubble); color: var(--text-color); border-radius: 22px; border-bottom-right-radius: 6px; word-wrap: break-word; white-space: pre-wrap; line-height: 1.5; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+.message.assistant { max-width: 100%; color: var(--text-color); word-wrap: break-word; white-space: pre-wrap; line-height: 1.6; }
 
 .message.typing { display: flex; gap: 4px; align-items: center; padding: 10px 0; }
 .message.typing span { width: 8px; height: 8px; background: #ccc; border-radius: 50%; animation: bounce 1s infinite ease-in-out; }
@@ -128,567 +86,35 @@ body::-webkit-scrollbar-thumb:hover {
 .message.typing span:nth-child(3) { animation-delay: 0.4s; }
 @keyframes bounce { 0%, 80%, 100% { transform: translateY(0); } 40% { transform: translateY(-8px); } }
 
-/* Область ввода */
-.input-area {
-  display: flex;
-  gap: 10px;
-  padding: 1rem;
-  background-color: transparent;
-  width: 100%;
-  z-index: 20;
-  align-items: flex-end;
-}
-
-.empty-state-app .input-area { position: relative; }
-
-
-.input-area textarea {
-  flex: 1;
-  padding: 0.85rem 1.25rem;
-  border: 1px solid var(--border-color);
-  border-radius: 24px;
-  resize: none;
-  outline: none;
-  max-height: 120px;
-  font-size: 1rem;
-  font-family: inherit;
-  line-height: 1.4;
-  min-height: 48px;
-  background-color: var(--bg-color);
-  /* Усилили тень: больше размытие и больше непрозрачность */
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
-}
-
-
-.input-area .action-btn,
-.input-area .send-btn {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  width: 48px;
-  height: 48px;
-  min-width: 48px;
-  padding: 0;
-  border: none;
-  border-radius: 50%;
-  cursor: pointer;
-  transition: background 0.2s, transform 0.1s, box-shadow 0.2s;
-  flex-shrink: 0;
-  /* Усилили тень */
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.25);
-}
-
-.input-area .action-btn {
-  background-color: var(--icon-btn-bg);
-  color: var(--icon-btn-color);
-}
-
-.input-area .action-btn:hover { background-color: #e1e1e1; }
-
-.input-area .send-btn {
-  background-color: var(--accent-color);
-  color: #fff;
-}
-
-.input-area .action-btn:active,
-.input-area .send-btn:active {
-  transform: scale(0.95);
-}
-
-.input-area .send-btn:disabled {
-  background-color: #b0d4ff;
-  cursor: not-allowed;
-  transform: none;
-}
-
-/* Сообщение об ошибке */
-.message.error-message {
-  background-color: #fff0f0;
-  color: #d32f2f;
-  border: 1px solid #ffcdd2;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 10px;
-  border-radius: 18px;
-  padding: 1rem 1.25rem;
-}
-
-.retry-btn {
-  background-color: #d32f2f;
-  color: white;
-  border: none;
-  padding: 6px 14px;
-  border-radius: 8px;
-  font-size: 0.85rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background-color 0.2s;
-}
-
-.retry-btn:hover { background-color: #b71c1c; }
-.retry-btn:disabled { background-color: #ef9a9a; cursor: not-allowed; }
-
-/* Тег исходного языка */
-.source-language-tag {
-  font-size: 0.7rem;
-  color: #999;
-  margin-top: 6px;
-  text-align: right;
-  font-weight: normal;
-  text-transform: lowercase;
-  opacity: 0.8;
-  padding: 0 4px;
-  display: flex;           /* Добавили для выравнивания */
-  justify-content: flex-end; /* Прижимаем к правому краю (как сообщение юзера) */
-  align-items: center;     /* Выравниваем по высоте */
-  gap: 8px;               /* Небольшие отступы между "идеальный перевод" и "понятно" */
-}
-
-/* Пустой экран */
-.empty-state {
-  text-align: center;
-  color: #999;
-  margin: 0 auto 2rem;
-  padding: 0 1.5rem;
-  font-size: 1rem;
-  line-height: 1.5;
-  max-width: 400px;
-}
-
-/* Кнопка Мини-урок */
-.lesson-btn {
-  background-color: transparent;
-  color: #555;
-  border: 1px solid #ccc;
-  padding: 8px 16px;
-  border-radius: 16px;
-  font-size: 0.9rem;
-  font-weight: 600;
-  cursor: pointer;
-  margin-top: 10px;
-  transition: all 0.2s;
-  align-self: flex-start;
-}
-
-.lesson-btn:hover {
-  background-color: #f1f1f1;
-  color: #333;
-  border-color: #bbb;
-}
-
-.lesson-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-/* Сообщение с уроком */
-.message.lesson-message {
-  position: relative; /* Добавили для позиционирования крестика */
-  background-color: #f0f7ff;
-  border: 1px solid #d0e3ff;
-  color: #1d1d1f;
-  border-radius: 18px;
-  border-bottom-left-radius: 6px;
-  padding: 1rem 1.25rem;
-}
-
-/* Кнопка закрытия урока (крестик) */
-.lesson-close-btn {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  background: transparent;
-  border: none;
-  color: #888;
-  cursor: pointer;
-  padding: 8px; /* Большая область клика */
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background 0.2s, color 0.2s;
-}
-
-.lesson-close-btn:hover {
-  background-color: #d0e3ff;
-  color: #333;
-}
-
-
-
-.message.lesson-loading {
-  background-color: #f0f7ff;
-  border: 1px solid #d0e3ff;
-}
-
-/* ========================================= */
-/* ===== КАРТОЧКА ПРОВЕРКИ УРОВНЯ ========== */
-/* ========================================= */
-
-/* Карточка проверки уровня */
-.message.assessment-card {
-  display: flex;
-  flex-direction: column;
-  width: 100%;
-  height: calc(100dvh - 250px);
-  min-height: 280px;
-  background-color: #f0f7ff;
-  border: 1px solid #d0e3ff;
-  border-radius: 18px;
-  padding: 30px; /* Увеличили отступы внутри карточки с 20px до 30px */
-  box-sizing: border-box;
-}
-
-/* Обертка текста и ползунка */
-.assessment-content-wrapper {
-  flex: 1;
-  display: flex;
-  align-items: stretch;
-  overflow: hidden;
-  min-height: 0;
-}
-
-/* Зона с текстом */
-.assessment-text-area {
-  flex: 1;
-  overflow-y: auto;
-  padding: 0 50px 0 20px;
-  font-size: 1.1rem;
-  line-height: 2.2;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #666; /* Новый, более светлый цвет текста */
-}
-.assessment-text-area .beginner-text {
-  text-align: center;
-  font-weight: bold;
-  color: #666;
-}
-
-/* Вертикальный ползунок */
-.assessment-slider {
-  width: 24px;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  align-items: center;
-  padding: 10px 0;
-}
-
-.slider-dot {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background-color: #c4dafc;
-  cursor: pointer;
-  transition: all 0.2s;
-  flex-shrink: 0;
-}
-
-.slider-dot:hover { background-color: #a0c4fd; }
-
-.slider-dot.active {
-  background-color: #007aff;
-  transform: scale(1.6);
-  box-shadow: 0 0 8px rgba(0, 122, 255, 0.4);
-}
-
-/* Нижний блок с кнопкой (БЕЗ абсолютного позиционирования) */
-.assessment-footer {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  gap: 15px;
-  padding-top: 15px;
-  margin-top: 10px;
-  border-top: 1px solid #d0e3ff;
-  flex-shrink: 0; /* Запрещаем сжатие кнопки */
-}
-
-.assessment-prompt-text {
-  font-size: 0.9rem;
-  color: #555;
-  font-weight: 500;
-  text-align: right;
-}
-
-.confirm-level-btn {
-  background-color: #007aff;
-  color: white;
-  border: none;
-  padding: 10px 20px;
-  border-radius: 12px;
-  font-size: 0.9rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 0.2s;
-  white-space: nowrap;
-}
-
-.confirm-level-btn:hover { background-color: #005ecb; }
-
-/* Сообщение с оценкой за урок */
-.message.evaluation-message {
-  background-color: #f0fff4; /* Очень светло-зеленый */
-  border: 1px solid #c6f6d5;
-  color: #1d1d1f;
-  border-radius: 18px;
-  border-bottom-left-radius: 6px;
-  padding: 1rem 1.25rem;
-  line-height: 1.6;
-}
-
-/* Обертка скрепки */
-.paperclip-wrapper {
-  position: relative;
-  display: flex;
-  align-items: flex-end;
-}
-
-/* Меню вложений */
-.attachment-menu {
-  position: absolute;
-  bottom: 120%; /* Поднимаем меню над кнопкой (100% + отступ) */
-  left: 0;     /* Прижимаем к левому краю скрепки */
-  width: 220px;
-  background-color: #2c2c2e;
-  border-radius: 14px;
-  box-shadow: 0 10px 30px rgba(0,0,0,0.4);
-  z-index: 150;
-  overflow: hidden;
-  animation: slideUp 0.2s ease-out;
-}
-
-@keyframes slideUp {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.menu-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 14px 18px;
-  color: #ffffff;
-  font-size: 1rem;
-  cursor: pointer;
-  border-bottom: 1px solid #3a3a3c;
-  transition: background 0.15s;
-}
-
-.menu-item:last-child {
-  border-bottom: none;
-}
-
-.menu-item:hover {
-  background-color: #3a3a3c;
-}
-
-.menu-item svg {
-  color: #ffffff;
-}
-
-/* Обертка для кнопки отправки и урока */
-.send-wrapper {
-  position: relative;
-  width: 48px;
-  height: 48px;
-  flex-shrink: 0;
-  align-self: flex-end; /* Прижимаем к нижней линии поля ввода */
-  margin-bottom: 1px;
-}
-
-/* Кнопка отправки внутри обертки */
-.send-wrapper .send-btn {
-  width: 100%;
-  height: 100%;
-}
-
-/* Оверлей кнопки Мини-урок */
-.send-btn.mini-lesson-overlay {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  background-color: #FF9500;
-  color: #ffffff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  border-radius: 50%;
-  cursor: pointer;
-  transition: background 0.2s, transform 0.1s;
-  z-index: 10;
-  /* Усилили оранжевую тень */
-  box-shadow: 0 6px 18px rgba(255, 149, 0, 0.6);
-}
-.send-btn.mini-lesson-overlay:hover {
-  background-color: #E68A00; /* Темно-оранжевый при наведении */
-}
-
-
-/* Ссылка "идеальный перевод" (выглядит как обычный текст с подчеркиванием) */
-.ideal-translation-link {
-  background: none;
-  border: none;
-  color: #999; /* Точно такой же серый, как у исходного языка */
-  text-decoration: underline;
-  cursor: pointer;
-  font-size: 0.7rem; /* Тот же размер шрифта */
-  padding: 0;
-  text-transform: lowercase; /* Строчные буквы */
-  font-family: inherit;
-}
-
-.ideal-translation-link:hover {
-  color: #666;
-}
-
-/* Стили для Markdown контента */
-.markdown-content {
-  line-height: 1.6;
-  word-wrap: break-word;
-}
-
-.markdown-content p {
-  margin-bottom: 0.5rem;
-}
-.markdown-content p:last-child {
-  margin-bottom: 0;
-}
-
-.markdown-content ul, .markdown-content ol {
-  margin-left: 1.5rem;
-  margin-bottom: 0.5rem;
-}
-
-.markdown-content li {
-  margin-bottom: 0.25rem;
-}
-
-.markdown-content strong {
-  font-weight: 600;
-}
-
-.markdown-content h1, .markdown-content h2, .markdown-content h3 {
-  font-weight: 600;
-  margin-top: 1rem;
-  margin-bottom: 0.5rem;
-}
-
-/* Блоки кода внутри текста */
-.markdown-content code {
-  background-color: rgba(0, 0, 0, 0.05);
-  padding: 0.2em 0.4em;
-  border-radius: 4px;
-  font-family: monospace;
-  font-size: 0.9em;
-}
-
-/* Отдельные блоки кода (```code```) */
-.markdown-content pre {
-  background-color: #f6f8fa;
-  padding: 1rem;
-  border-radius: 8px;
-  overflow-x: auto;
-  margin-bottom: 0.5rem;
-}
-
-.markdown-content pre code {
-  background-color: transparent;
-  padding: 0;
-  border-radius: 0;
-  font-size: 0.9rem;
-}
-
-/* Блокquotes (цитаты) */
-.markdown-content blockquote {
-  border-left: 4px solid #d0e3ff;
-  padding-left: 1rem;
-  margin: 0.5rem 0;
-  color: #555;
-}
-
-.chat-active-app .input-area {
-  position: fixed;
-  bottom: 0;
-  left: 50%;
-  transform: translateX(-50%);
-  max-width: 768px;
-  width: 100%;
-  box-shadow: none;
-  background-color: transparent;
-  /* Добавили env(safe-area-inset-bottom) для нижнего отступа */
-  padding: 1rem 1rem calc(2rem + env(safe-area-inset-bottom));
-  z-index: 20;
-}
-
-/* Стили для таблицы произношения в Markdown */
-.markdown-content table {
-  display: inline-table;
-  width: auto;
-  border-collapse: collapse;
-  margin-bottom: 8px;
-  margin-top: 4px;
-}
-
-.markdown-content thead th {
-  color: #bbb; /* Более незаметный серый цвет для произношения */
-  font-weight: normal;
-  font-size: 0.75rem;
-  border: none;
-  padding: 2px 10px;
-  text-align: center;
-  white-space: nowrap;
-}
-
-.markdown-content tbody td {
-  border: none;
-  padding: 2px 10px;
-  text-align: center;
-  white-space: nowrap;
-}
-
-/* Стиль Polaroid для фотографий пользователя */
-.polaroid {
-  background-color: #fff;
-  padding: 10px 10px 30px 10px; /* Белая рамка, снизу шире (Polaroid) */
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
-  max-width: 220px; /* Ограничиваем размер фото */
-  margin-bottom: 12px;
-  align-self: flex-end; /* Прижимаем к правому краю (как сообщение юзера) */
-  transition: transform 0.3s ease;
-}
-
-.polaroid img {
-  width: 100%;
-  height: auto; /* Сохраняем пропорции */
-  display: block;
-  object-fit: contain; /* Не обрезаем фото */
-}
-
-/* Небольшой хук, чтобы при навеведении наклон выравнивался (приятно для глаз) */
-.polaroid:hover {
-  transform: rotate(0deg) scale(1.02) !important;
-}
-
-/* Стили для печатной машинки */
-.typewriter {
-  font-size: 1rem;
-  color: #999;
-  text-align: center;
-  min-height: 20px;
-}
-.cursor {
-  animation: blink 1s infinite;
-  color: #007aff;
-  font-weight: 100;
-}
-@keyframes blink {
-  0%, 50% { opacity: 1; }
-  51%, 100% { opacity: 0; }
-}
+/* Ошибка и Retry */
+.message.error-message { background-color: #fff0f0; color: #d32f2f; border: 1px solid #ffcdd2; border-radius: 18px; padding: 1rem 1.25rem; display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
+.retry-link { background: none; border: none; color: #d32f2f; text-decoration: underline; cursor: pointer; font-size: 0.9rem; padding: 0; font-family: inherit; }
+
+/* Polaroid */
+.polaroid { background-color: #fff; padding: 10px 10px 30px 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.15); max-width: 220px; margin-bottom: 12px; align-self: flex-end; transition: transform 0.3s ease; cursor: pointer; }
+.polaroid img { width: 100%; height: auto; display: block; object-fit: contain; }
+.polaroid:hover { transform: rotate(0deg) scale(1.02) !important; }
+
+/* Lightbox */
+.lightbox { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 200; display: flex; justify-content: center; align-items: center; cursor: pointer; }
+.lightbox img { max-width: 95%; max-height: 95%; object-fit: contain; border-radius: 8px; }
+
+/* Input Area */
+.input-area { display: flex; gap: 10px; padding: 1rem; background-color: transparent; width: 100%; z-index: 20; align-items: flex-end; position: fixed; bottom: 0; left: 50%; transform: translateX(-50%); max-width: 768px; padding-bottom: calc(1rem + env(safe-area-inset-bottom)); }
+.input-area textarea { flex: 1; padding: 0.85rem 1.25rem; border: 1px solid var(--border-color); border-radius: 24px; resize: none; outline: none; max-height: 120px; font-size: 1rem; line-height: 1.4; min-height: 48px; background-color: var(--bg-color); box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+.action-btn, .send-btn { display: flex; justify-content: center; align-items: center; width: 48px; height: 48px; min-width: 48px; padding: 0; border: none; border-radius: 50%; cursor: pointer; flex-shrink: 0; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+.action-btn { background-color: var(--icon-btn-bg); color: var(--icon-btn-color); }
+.send-btn { background-color: var(--accent-color); color: #fff; }
+.action-btn:active, .send-btn:active { transform: scale(0.95); }
+.send-btn:disabled { background-color: #b0d4ff; cursor: not-allowed; }
+
+/* Typewriter */
+.empty-state { text-align: center; color: #999; margin: 0 auto 2rem; padding: 0 1.5rem; font-size: 1rem; max-width: 400px; }
+.typewriter { font-size: 1rem; color: #999; text-align: center; min-height: 20px; }
+.cursor { animation: blink 1s infinite; color: #007aff; }
+@keyframes blink { 0%, 50% { opacity: 1; } 51%, 100% { opacity: 0; } }
+
+/* Markdown */
+.markdown-content { line-height: 1.6; word-wrap: break-word; }
+.markdown-content p { margin-bottom: 0.5rem; }
+.markdown-content strong { font-weight: 600; }

@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import asyncpg
 from dotenv import load_dotenv
-from PIL import Image
+from PIL import Image, ImageOps
 import pillow_heif
 
 from prompts import get_text_prompt, get_image_prompt
@@ -20,7 +20,6 @@ pillow_heif.register_heif_opener()
 
 app = FastAPI()
 
-# В самом начале файла, где настраивается CORS:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Разрешить все домены (для MVP это нормально)
@@ -29,7 +28,6 @@ app.add_middleware(
     allow_headers=["*", "X-Session-Id"],
 )
 
-# Измените константу языка по умолчанию:
 DEFAULT_LANGUAGE = "Spanish (Argentina)"
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -40,8 +38,7 @@ SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 STORAGE_BUCKET = "chat-images"
 
 TEXT_MODEL = "deepseek/deepseek-chat"
-VISION_MODEL = "openai/gpt-5.6-luna" # "google/gemini-2.5-flash-lite" # google/gemini-3.8-flash # "google/gemini-2.0-flash-exp:free"
-
+VISION_MODEL = "openai/gpt-5.6-luna"
 
 db_pool = None
 
@@ -63,8 +60,7 @@ async def startup():
                 await conn.execute(
                     '''CREATE TABLE IF NOT EXISTS chat_history (id SERIAL PRIMARY KEY, session_id UUID NOT NULL, role VARCHAR(50) NOT NULL, content TEXT NOT NULL, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)''')
                 await conn.execute(
-                    '''CREATE TABLE IF NOT EXISTS user_settings (session_id UUID PRIMARY KEY, target_language_name VARCHAR(100) DEFAULT 'китайский')''')
-                # ДОБАВЛЯЕМ НОВЫЕ КОЛОНКИ ДЛЯ ФОТО
+                    '''CREATE TABLE IF NOT EXISTS user_settings (session_id UUID PRIMARY KEY, target_language_name VARCHAR(100) DEFAULT 'Spanish (Argentina)')''')
                 await conn.execute(
                     "ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS message_type VARCHAR(20) DEFAULT 'text'")
                 await conn.execute("ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS media_url TEXT")
@@ -85,12 +81,10 @@ def get_session_id(req: Request):
 async def save_message(conn, session_id, user_text, ai_reply, msg_type="text", media_url=None):
     await conn.execute(
         "INSERT INTO chat_history (session_id, role, content, message_type, media_url) VALUES ($1, $2, $3, $4, $5)",
-        session_id, "user", user_text, msg_type, media_url
-    )
+        session_id, "user", user_text, msg_type, media_url)
     await conn.execute(
         "INSERT INTO chat_history (session_id, role, content, message_type, media_url) VALUES ($1, $2, $3, $4, $5)",
-        session_id, "assistant", ai_reply, "text", None
-    )
+        session_id, "assistant", ai_reply, "text", None)
 
 
 async def get_user_language(session_id: uuid.UUID) -> str:
@@ -110,10 +104,11 @@ async def get_user_language(session_id: uuid.UUID) -> str:
 
 async def call_openrouter(messages: list, model: str):
     headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
-    payload = {"model": model, "messages": messages, "response_format": {"type": "json_object"}}
+    payload = {"model": model, "messages": messages, "response_format": {"type": "json_object"}, "temperature": 0.7}
     async with httpx.AsyncClient() as client:
         response = await client.post(OPENROUTER_URL, headers=headers, json=payload, timeout=60.0)
         if response.status_code != 200:
+            print(f"OpenRouter Error {response.status_code}: {response.text}")
             if response.status_code == 429: raise HTTPException(status_code=429, detail="ИИ перегружен.")
             raise HTTPException(status_code=response.status_code, detail="Ошибка ИИ.")
         data = response.json()
@@ -129,87 +124,65 @@ async def call_openrouter(messages: list, model: str):
 async def upload_to_supabase(jpeg_bytes: bytes) -> str:
     file_name = f"{uuid.uuid4().hex}.jpg"
     upload_url = f"{SUPABASE_URL}/storage/v1/object/{STORAGE_BUCKET}/{file_name}"
-    headers = {
-        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
-        "Content-Type": "image/jpeg",
-        "x-upsert": "true"
-    }
+    headers = {"Authorization": f"Bearer {SUPABASE_SERVICE_KEY}", "Content-Type": "image/jpeg", "x-upsert": "true"}
     async with httpx.AsyncClient() as client:
         resp = await client.post(upload_url, headers=headers, content=jpeg_bytes, timeout=30.0)
         if resp.status_code != 200:
+            print(f"Supabase Upload Error: {resp.text}")
             raise HTTPException(500, "Failed to upload to Supabase Storage")
     return f"{SUPABASE_URL}/storage/v1/object/public/{STORAGE_BUCKET}/{file_name}"
 
 
-# --- НОВАЯ ФУНКЦИЯ ---
 async def get_last_assistant_message(conn, session_id: uuid.UUID) -> Optional[str]:
-    """Получает только последнее сообщение ассистента для данной сессии."""
     row = await conn.fetchrow(
         "SELECT content FROM chat_history WHERE session_id = $1 AND role = 'assistant' ORDER BY created_at DESC LIMIT 1",
-        session_id
-    )
+        session_id)
     return row["content"] if row else None
 
 
-# --- ОБНОВЛЕННАЯ process_text ---
 async def process_text(text: str, session_id: uuid.UUID) -> dict:
     target_lang = await get_user_language(session_id)
-
-    # Получаем последнее сообщение ассистента из БД
     async with db_pool.acquire() as conn:
         last_assistant_msg = await get_last_assistant_message(conn, session_id)
-
-    # Если реального сообщения еще нет (первый вход), используем искусственное
     if not last_assistant_msg:
         last_assistant_msg = "Какой у тебя уровень языка?"
-
-    # Формируем сообщения для OpenRouter
     messages = [
         {"role": "system", "content": get_text_prompt(target_lang)},
         {"role": "assistant", "content": last_assistant_msg},
         {"role": "user", "content": [{"type": "text", "text": text}]}
     ]
-
     translation = await call_openrouter(messages, model=TEXT_MODEL)
-
     async with db_pool.acquire() as conn:
         await save_message(conn, session_id, text, translation, msg_type="text")
-
     return {"translation": translation}
 
 
-# --- ОБНОВЛЕННАЯ process_image (без контекста) ---
 async def process_image(file: UploadFile, session_id: uuid.UUID) -> dict:
     target_lang = await get_user_language(session_id)
     contents = await file.read()
     if len(contents) > 5 * 1024 * 1024: raise HTTPException(status_code=413, detail="Файл слишком большой.")
 
-    # Конвертация в JPEG
     try:
         img = Image.open(io.BytesIO(contents))
+        img = ImageOps.exif_transpose(img)  # ПРИМЕНЯЕМ EXIF ОРИЕНТАЦИЮ
         img = img.convert('RGB')
         buffer = io.BytesIO()
         img.save(buffer, format='JPEG', quality=85)
         jpeg_bytes = buffer.getvalue()
     except Exception as img_err:
+        print(f"Image processing error: {img_err}")
         raise HTTPException(status_code=400, detail="Invalid image file")
 
-    # Загрузка в Supabase
     media_url = await upload_to_supabase(jpeg_bytes)
-
-    # Анализ ИИ (БЕЗ истории и БЕЗ последнего сообщения)
     image_base64 = base64.b64encode(jpeg_bytes).decode('utf-8')
     user_content = [{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}]
-
     messages = [
         {"role": "system", "content": get_image_prompt(target_lang)},
         {"role": "user", "content": user_content}
     ]
     translation = await call_openrouter(messages, model=VISION_MODEL)
-
     async with db_pool.acquire() as conn:
         await save_message(conn, session_id, "", translation, msg_type="image", media_url=media_url)
-
     return {"translation": translation, "media_url": media_url}
 
 
@@ -217,10 +190,8 @@ async def process_image(file: UploadFile, session_id: uuid.UUID) -> dict:
 async def message(req: Request, text: Optional[str] = Form(None), file: UploadFile = File(None)):
     if not OPENROUTER_API_KEY: raise HTTPException(status_code=500, detail="API Key not configured")
     if not db_pool: raise HTTPException(status_code=503, detail="База данных не подключена.")
-
     session_id_str = get_session_id(req)
     session_id = uuid.UUID(session_id_str)
-
     if file:
         if file.content_type and file.content_type.startswith("image/"):
             result = await process_image(file, session_id)
