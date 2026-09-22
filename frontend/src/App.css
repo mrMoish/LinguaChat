@@ -10,7 +10,6 @@
 
 * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
 
-/* Скрытый скроллбар для мобильных */
 @media (max-width: 768px) {
   body::-webkit-scrollbar { display: none; }
   html { scrollbar-width: none; }
@@ -19,88 +18,79 @@ body::-webkit-scrollbar { width: 8px; }
 body::-webkit-scrollbar-track { background: transparent; }
 body::-webkit-scrollbar-thumb { background-color: #cccccc; border-radius: 4px; }
 
-.app-container { position: relative; display: flex; flex-direction: column; min-height: 100dvh; max-width: 768px; margin: 0 auto; background-color: var(--bg-color); }
-.empty-state-app { height: 100dvh; justify-content: center; }
+.app-container { position: relative; display: flex; flex-direction: column; min-height: 100dvh; max-width: 768px; margin: 0 auto; background-color: var(--bg-color); overflow: hidden; }
+.empty-state-app { height: 100dvh; }
 
-
-
-/* Кнопка Войти (PWA) */
-.login-btn {
-  position: fixed;
-  top: calc(15px + env(safe-area-inset-top)); /* Учитываем системный статус бар */
-  right: 15px;
-  z-index: 100;
-  background-color: #333333;
-  color: #ffffff;
-  border: none;
-  padding: 8px 16px;
-  border-radius: 20px;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  gap: 8px;
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background-color 0.2s;
-}
-.login-btn:hover { background-color: #555555; }
-/* Индикатор синхронизации */
-.sync-loader { position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%); display: flex; gap: 5px; z-index: 40; }
-.sync-loader span { width: 8px; height: 8px; background: #ccc; border-radius: 50%; animation: bounce 1s infinite ease-in-out; }
-.sync-loader span:nth-child(2) { animation-delay: 0.2s; }
-.sync-loader span:nth-child(3) { animation-delay: 0.4s; }
-
-/* Лёгкая тень под статус баром */
 .status-bar-shadow {
-  position: fixed;
-  top: -20px;
-  left: 0;
-  width: 100%;
-  height: 20px;
-  z-index: 5;
-  pointer-events: none;
-  box-shadow: 0 8px 25px -5px rgba(0, 0, 0, 0.40);
+  position: fixed; top: env(safe-area-inset-top); left: 0; width: 100%;
+  height: 0; min-height: 0; z-index: 5; pointer-events: none;
+  box-shadow: 0 8px 25px -5px rgba(0, 0, 0, 0.15);
 }
 
-/* Диалоговое окно */
-.chat-container {
-  padding-top: calc(15px + env(safe-area-inset-top)); /* Чат начинается сразу под статус баром */
-  padding-bottom: calc(100px + env(safe-area-inset-bottom));
-  padding-left: 1rem;
-  padding-right: 1rem;
+.login-btn {
+  position: fixed; top: calc(15px + env(safe-area-inset-top)); right: 15px; z-index: 100;
+  background-color: #333333; color: #ffffff; border: none; padding: 8px 16px; border-radius: 20px;
+  display: flex; justify-content: center; align-items: center; gap: 8px; font-size: 14px; font-weight: 500; cursor: pointer;
+}
+
+/* Стартовый экран (Empty State) */
+/* Стартовый экран (Empty State) */
+.empty-wrapper {
+  flex: 1; /* Заставляет обертку занимать всё свободное место, чтобы центрировать контент */
   display: flex;
   flex-direction: column;
-  width: 100%;
+  justify-content: center;
+  align-items: center;
+  height: 100%;
+  padding-bottom: env(safe-area-inset-bottom);
 }
+
+.chat-container {
+  padding-top: calc(15px + env(safe-area-inset-top));
+  padding-bottom: calc(120px + env(safe-area-inset-bottom));
+  padding-left: 1rem; padding-right: 1rem;
+  display: flex; flex-direction: column; width: 100%;
+  height: 100%;
+}
+
 .message-wrapper { display: flex; flex-direction: column; margin-bottom: 1.5rem; width: 100%; }
 .message-wrapper.user { align-items: flex-end; }
 .message-wrapper.assistant { align-items: flex-start; }
 
 .message.user { max-width: 85%; padding: 1.2rem 1.5rem; background-color: var(--user-bubble); color: var(--text-color); border-radius: 22px; border-bottom-right-radius: 6px; word-wrap: break-word; white-space: pre-wrap; line-height: 1.5; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
 .message.assistant { max-width: 100%; color: var(--text-color); word-wrap: break-word; white-space: pre-wrap; line-height: 1.6; }
-
-.message.typing { display: flex; gap: 4px; align-items: center; padding: 10px 0; }
-.message.typing span { width: 8px; height: 8px; background: #ccc; border-radius: 50%; animation: bounce 1s infinite ease-in-out; }
+.message.typing { display: flex; gap: 4px; align-items: center; padding: 10px 15px; background: var(--user-bubble); border-radius: 18px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); max-width: 60px; }
+.message.typing span { width: 8px; height: 8px; background: #999; border-radius: 50%; animation: bounce 1s infinite ease-in-out; }
 .message.typing span:nth-child(2) { animation-delay: 0.2s; }
 .message.typing span:nth-child(3) { animation-delay: 0.4s; }
 @keyframes bounce { 0%, 80%, 100% { transform: translateY(0); } 40% { transform: translateY(-8px); } }
 
-/* Ошибка и Retry */
-.message.error-message { background-color: #fff0f0; color: #d32f2f; border: 1px solid #ffcdd2; border-radius: 18px; padding: 1rem 1.25rem; display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
+.message.error-message { background-color: #fff0f0; color: #d32f2f; border: 1px solid #ffcdd2; border-radius: 18px; padding: 1rem 1.25rem; display: flex; flex-direction: column; align-items: flex-start; gap: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); max-width: 85%; }
 .retry-link { background: none; border: none; color: #d32f2f; text-decoration: underline; cursor: pointer; font-size: 0.9rem; padding: 0; font-family: inherit; }
 
-/* Polaroid */
 .polaroid { background-color: #fff; padding: 10px 10px 30px 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.15); max-width: 220px; margin-bottom: 12px; align-self: flex-end; transition: transform 0.3s ease; cursor: pointer; }
 .polaroid img { width: 100%; height: auto; display: block; object-fit: contain; }
 .polaroid:hover { transform: rotate(0deg) scale(1.02) !important; }
 
-/* Lightbox */
 .lightbox { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 200; display: flex; justify-content: center; align-items: center; cursor: pointer; }
 .lightbox img { max-width: 95%; max-height: 95%; object-fit: contain; border-radius: 8px; }
 
+
 /* Input Area */
-.input-area { display: flex; gap: 10px; padding: 1rem; background-color: transparent; width: 100%; z-index: 20; align-items: flex-end; position: fixed; bottom: 0; left: 50%; transform: translateX(-50%); max-width: 768px; padding-bottom: calc(1rem + env(safe-area-inset-bottom)); }
+/* Input Area */
+.input-area {
+  display: flex; gap: 10px; padding: 1rem;
+  background-color: transparent; width: 100%; z-index: 20; align-items: flex-end;
+  position: fixed; bottom: 0; left: 0; right: 0; margin: 0 auto; max-width: 768px; /* Надежное центрирование fixed элемента */
+  transition: bottom 0.2s ease;
+}
+
+/* В стартовом состоянии инпут relative, чтобы центрироваться вместе с подсказкой */
+.input-area.input-centered {
+  position: relative; bottom: auto;
+  margin: 20px auto 0 auto; width: 100%; max-width: 600px;
+}
+
 .input-area textarea { flex: 1; padding: 0.85rem 1.25rem; border: 1px solid var(--border-color); border-radius: 24px; resize: none; outline: none; max-height: 120px; font-size: 1rem; line-height: 1.4; min-height: 48px; background-color: var(--bg-color); box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
 .action-btn, .send-btn { display: flex; justify-content: center; align-items: center; width: 48px; height: 48px; min-width: 48px; padding: 0; border: none; border-radius: 50%; cursor: pointer; flex-shrink: 0; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
 .action-btn { background-color: var(--icon-btn-bg); color: var(--icon-btn-color); }
@@ -108,13 +98,11 @@ body::-webkit-scrollbar-thumb { background-color: #cccccc; border-radius: 4px; }
 .action-btn:active, .send-btn:active { transform: scale(0.95); }
 .send-btn:disabled { background-color: #b0d4ff; cursor: not-allowed; }
 
-/* Typewriter */
 .empty-state { text-align: center; color: #999; margin: 0 auto 2rem; padding: 0 1.5rem; font-size: 1rem; max-width: 400px; }
 .typewriter { font-size: 1rem; color: #999; text-align: center; min-height: 20px; }
 .cursor { animation: blink 1s infinite; color: #007aff; }
 @keyframes blink { 0%, 50% { opacity: 1; } 51%, 100% { opacity: 0; } }
 
-/* Markdown */
 .markdown-content { line-height: 1.6; word-wrap: break-word; }
 .markdown-content p { margin-bottom: 0.5rem; }
 .markdown-content strong { font-weight: 600; }
