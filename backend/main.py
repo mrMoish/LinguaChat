@@ -23,7 +23,11 @@ from dotenv import load_dotenv
 from PIL import Image, ImageOps
 import pillow_heif
 
-from prompts import get_unified_prompt
+from prompts import (
+    get_unified_prompt,
+    get_summary_update_prompt,
+    get_summary_rebuild_prompt,
+)
 
 
 load_dotenv()
@@ -45,9 +49,11 @@ app.add_middleware(
 DEFAULT_LANGUAGE = "Chinese"
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+
 OPENROUTER_URL = (
     "https://openrouter.ai/api/v1/chat/completions"
 )
+
 TRANSCRIPTION_URL = (
     "https://openrouter.ai/api/v1/audio/transcriptions"
 )
@@ -134,6 +140,26 @@ async def startup():
                 ALTER TABLE chat_history
                 ADD COLUMN IF NOT EXISTS
                 media_url TEXT
+                """
+            )
+
+            # ==================================================
+            # Долговременная память одного постоянного чата
+            # ==================================================
+
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_memory (
+                    session_id UUID PRIMARY KEY,
+
+                    chat_summary TEXT NOT NULL DEFAULT '',
+
+                    summary_message_count INTEGER NOT NULL
+                        DEFAULT 0,
+
+                    updated_at TIMESTAMP WITH TIME ZONE
+                        DEFAULT CURRENT_TIMESTAMP
+                )
                 """
             )
 
@@ -269,7 +295,11 @@ async def get_user_language(
     return DEFAULT_LANGUAGE
 
 
-RECENT_HISTORY_LIMIT = 8
+# ============================================================
+# RECENT HISTORY
+# ============================================================
+
+RECENT_HISTORY_LIMIT = 20
 
 
 async def get_recent_history(
@@ -282,7 +312,7 @@ async def get_recent_history(
         SELECT role, content
         FROM chat_history
         WHERE session_id = $1
-        ORDER BY created_at DESC
+        ORDER BY created_at DESC, id DESC
         LIMIT $2
         """,
         session_id,
@@ -290,6 +320,347 @@ async def get_recent_history(
     )
 
     return list(reversed(rows))
+
+
+async def get_all_history(
+    conn,
+    session_id: uuid.UUID,
+):
+    rows = await conn.fetch(
+        """
+        SELECT role, content
+        FROM chat_history
+        WHERE session_id = $1
+        ORDER BY created_at ASC, id ASC
+        """,
+        session_id,
+    )
+
+    return list(rows)
+
+
+async def get_message_count(
+    conn,
+    session_id: uuid.UUID,
+) -> int:
+
+    result = await conn.fetchval(
+        """
+        SELECT COUNT(*)
+        FROM chat_history
+        WHERE session_id = $1
+        """,
+        session_id,
+    )
+
+    return int(result or 0)
+
+
+# ============================================================
+# CHAT MEMORY
+# ============================================================
+
+SUMMARY_REBUILD_EVERY_MESSAGES = 200
+
+
+async def get_chat_memory(
+    conn,
+    session_id: uuid.UUID,
+):
+    row = await conn.fetchrow(
+        """
+        SELECT
+            chat_summary,
+            summary_message_count
+        FROM chat_memory
+        WHERE session_id = $1
+        """,
+        session_id,
+    )
+
+    if not row:
+
+        await conn.execute(
+            """
+            INSERT INTO chat_memory
+            (
+                session_id,
+                chat_summary,
+                summary_message_count
+            )
+            VALUES ($1, '', 0)
+            ON CONFLICT (session_id)
+            DO NOTHING
+            """,
+            session_id,
+        )
+
+        return "", 0
+
+    return (
+        row["chat_summary"] or "",
+        row["summary_message_count"] or 0,
+    )
+
+
+def normalize_memory_updates(
+    value,
+):
+    if isinstance(value, str):
+        value = [value]
+
+    if not isinstance(value, list):
+        return []
+
+    result = []
+
+    for item in value:
+        if not isinstance(item, str):
+            continue
+
+        item = item.strip()
+
+        if item:
+            result.append(item)
+
+    return result[:5]
+
+
+async def save_chat_summary(
+    session_id: uuid.UUID,
+    summary: str,
+):
+    summary = (summary or "").strip()
+
+    if not summary:
+        return
+
+    async with db_pool.acquire() as conn:
+
+        message_count = await get_message_count(
+            conn,
+            session_id,
+        )
+
+        await conn.execute(
+            """
+            INSERT INTO chat_memory
+            (
+                session_id,
+                chat_summary,
+                summary_message_count,
+                updated_at
+            )
+            VALUES (
+                $1,
+                $2,
+                $3,
+                CURRENT_TIMESTAMP
+            )
+            ON CONFLICT (session_id)
+            DO UPDATE SET
+                chat_summary = EXCLUDED.chat_summary,
+                summary_message_count =
+                    EXCLUDED.summary_message_count,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            session_id,
+            summary,
+            message_count,
+        )
+
+
+async def update_summary_from_memory_updates(
+    session_id: uuid.UUID,
+    current_summary: str,
+    memory_updates: list[str],
+):
+    if not memory_updates:
+        return
+
+    messages = [
+        {
+            "role": "system",
+            "content": get_summary_update_prompt(
+                current_summary
+            ),
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": json.dumps(
+                        memory_updates,
+                        ensure_ascii=False,
+                    ),
+                }
+            ],
+        },
+    ]
+
+    result = await call_openrouter(
+        messages,
+        model=TEXT_MODEL,
+    )
+
+    new_summary = (
+        result.get("chat_summary") or ""
+    ).strip()
+
+    if not new_summary:
+        print(
+            "Summary update returned empty summary."
+        )
+        return
+
+    await save_chat_summary(
+        session_id,
+        new_summary,
+    )
+
+    print(
+        "Chat summary updated from memory updates."
+    )
+
+
+async def rebuild_chat_summary(
+    session_id: uuid.UUID,
+    current_summary: str,
+):
+    async with db_pool.acquire() as conn:
+        history_rows = await get_all_history(
+            conn,
+            session_id,
+        )
+
+    if not history_rows:
+        return
+
+    history_messages = [
+        {
+            "role": row["role"],
+            "content": row["content"],
+        }
+        for row in history_rows
+        if row["content"]
+    ]
+
+    if not history_messages:
+        return
+
+    messages = [
+        {
+            "role": "system",
+            "content": get_summary_rebuild_prompt(
+                current_summary
+            ),
+        },
+        *history_messages,
+    ]
+
+    result = await call_openrouter(
+        messages,
+        model=TEXT_MODEL,
+    )
+
+    new_summary = (
+        result.get("chat_summary") or ""
+    ).strip()
+
+    if not new_summary:
+        print(
+            "Full summary rebuild returned empty summary."
+        )
+        return
+
+    await save_chat_summary(
+        session_id,
+        new_summary,
+    )
+
+    print(
+        "Chat summary fully rebuilt from history."
+    )
+
+
+async def refresh_chat_memory(
+    session_id: uuid.UUID,
+    memory_updates: list[str],
+):
+    """
+    Обновление памяти.
+
+    Приоритет:
+
+    1. Если появился новый важный факт —
+       сразу обновить summary.
+
+    2. Если новых фактов нет, но накопилось
+       достаточно сообщений —
+       выполнить полную пересборку summary
+       из исходной истории.
+
+    Ошибка памяти не должна ломать
+    основной ответ пользователю.
+    """
+
+    try:
+
+        async with db_pool.acquire() as conn:
+
+            current_summary, summary_message_count = (
+                await get_chat_memory(
+                    conn,
+                    session_id,
+                )
+            )
+
+            total_message_count = (
+                await get_message_count(
+                    conn,
+                    session_id,
+                )
+            )
+
+        # ----------------------------------------------------
+        # Новый важный факт
+        # ----------------------------------------------------
+
+        if memory_updates:
+
+            await update_summary_from_memory_updates(
+                session_id,
+                current_summary,
+                memory_updates,
+            )
+
+            return
+
+        # ----------------------------------------------------
+        # Периодическая защита от накопления ошибок
+        # ----------------------------------------------------
+
+        messages_since_summary = (
+            total_message_count
+            - summary_message_count
+        )
+
+        if (
+            messages_since_summary
+            >= SUMMARY_REBUILD_EVERY_MESSAGES
+        ):
+
+            await rebuild_chat_summary(
+                session_id,
+                current_summary,
+            )
+
+    except Exception as e:
+
+        print(
+            f"Chat memory update error: {e}"
+        )
 
 
 # ============================================================
@@ -300,6 +671,12 @@ async def call_openrouter(
     messages: list,
     model: str,
 ):
+
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(
+            status_code=500,
+            detail="API Key not configured",
+        )
 
     headers = {
         "Authorization": (
@@ -335,6 +712,7 @@ async def call_openrouter(
         )
 
         if response.status_code == 429:
+
             raise HTTPException(
                 status_code=429,
                 detail="ИИ перегружен.",
@@ -351,24 +729,31 @@ async def call_openrouter(
         "choices" not in data
         or not data["choices"]
     ):
+
         raise HTTPException(
             status_code=500,
             detail="ИИ не вернул ответ.",
         )
 
-    raw_text = (
+    raw_content = (
         data["choices"][0]["message"]["content"]
-        .strip()
     )
+
+    if not raw_content:
+        raise HTTPException(
+            status_code=500,
+            detail="ИИ вернул пустой ответ.",
+        )
+
+    raw_text = raw_content.strip()
 
     try:
 
         parsed = json.loads(raw_text)
 
-        return parsed.get(
-            "translation",
-            "Ошибка обработки ИИ.",
-        )
+        print("\n========== PARSED TRANSLATION ==========")
+        print(repr(parsed.get("translation")))
+        print("========================================\n")
 
     except json.JSONDecodeError:
 
@@ -381,6 +766,15 @@ async def call_openrouter(
             status_code=500,
             detail="Ошибка формата ИИ.",
         )
+
+    if not isinstance(parsed, dict):
+
+        raise HTTPException(
+            status_code=500,
+            detail="Ошибка формата ИИ.",
+        )
+
+    return parsed
 
 
 # ============================================================
@@ -705,20 +1099,34 @@ async def process_message(
         session_id
     )
 
+    # --------------------------------------------------------
+    # Получаем summary + последние сообщения
+    # --------------------------------------------------------
+
     async with db_pool.acquire() as conn:
 
         history_rows = await get_recent_history(
+            conn,
+            session_id,
+            RECENT_HISTORY_LIMIT,
+        )
+
+        chat_summary, _ = await get_chat_memory(
             conn,
             session_id,
         )
 
     history_messages = [
         {
-            "role": r["role"],
-            "content": r["content"],
+            "role": row["role"],
+            "content": row["content"],
         }
-        for r in history_rows
+        for row in history_rows
     ]
+
+    # --------------------------------------------------------
+    # Первый вопрос
+    # --------------------------------------------------------
 
     if not history_messages:
 
@@ -731,11 +1139,16 @@ async def process_message(
             }
         ]
 
+    # --------------------------------------------------------
+    # Основной запрос к AI
+    # --------------------------------------------------------
+
     messages = [
         {
             "role": "system",
             "content": get_unified_prompt(
-                target_lang
+                target_lang,
+                chat_summary=chat_summary,
             ),
         },
         *history_messages,
@@ -745,18 +1158,29 @@ async def process_message(
         },
     ]
 
-    # Сейчас TEXT_MODEL и VISION_MODEL
-    # одинаковые, поэтому можно использовать
-    # TEXT_MODEL для всех сообщений.
-    #
-    # Если позже модели будут различаться,
-    # здесь можно определить модель
-    # в зависимости от типа сообщения.
-
-    translation = await call_openrouter(
+    result = await call_openrouter(
         messages,
         model=TEXT_MODEL,
     )
+
+    translation = (
+        result.get("translation") or ""
+    ).strip()
+
+    if not translation:
+
+        raise HTTPException(
+            status_code=500,
+            detail="ИИ не вернул ответ.",
+        )
+
+    memory_updates = normalize_memory_updates(
+        result.get("memory_updates")
+    )
+
+    # --------------------------------------------------------
+    # Сохраняем основную историю
+    # --------------------------------------------------------
 
     async with db_pool.acquire() as conn:
 
@@ -768,6 +1192,15 @@ async def process_message(
             msg_type=msg_type,
             media_url=media_url,
         )
+
+    # --------------------------------------------------------
+    # Обновляем долгосрочную память
+    # --------------------------------------------------------
+
+    await refresh_chat_memory(
+        session_id,
+        memory_updates,
+    )
 
     return {
         "translation": translation,
@@ -823,7 +1256,10 @@ async def process_image(
             io.BytesIO(contents)
         )
 
-        img = ImageOps.exif_transpose(img)
+        img = ImageOps.exif_transpose(
+            img
+        )
+
         img = img.convert("RGB")
 
         buffer = io.BytesIO()
@@ -1135,17 +1571,6 @@ async def message(
                 ),
             )
 
-            # ----------------------------------------------
-            # IMPORTANT:
-            #
-            # transcription is returned separately.
-            # This is what the frontend uses to show:
-            #
-            # [▶] transcription
-            #
-            # instead of two separate bubbles.
-            # ----------------------------------------------
-
             return {
                 "translation": result[
                     "translation"
@@ -1240,7 +1665,7 @@ async def get_history(
                     media_url
                 FROM chat_history
                 WHERE session_id = $1
-                ORDER BY created_at ASC
+                ORDER BY created_at ASC, id ASC
                 """,
                 session_uuid,
             )
@@ -1262,12 +1687,7 @@ async def get_history(
 
             return {
                 "session_id": session_id_str,
-
-                # Основное имя
                 "history": history,
-
-                # Для совместимости
-                # со старым frontend
                 "messages": history,
             }
 
