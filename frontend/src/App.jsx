@@ -306,6 +306,14 @@ export default function App() {
   const [lightboxSrc, setLightboxSrc] = useState(null);
 
   // ----------------------------------------------------------
+  // PWA install
+  // ----------------------------------------------------------
+
+  const [deferredPrompt, setDeferredPrompt] = useState(null);
+  const [isAppInstalled, setIsAppInstalled] = useState(false);
+  const [isAndroid, setIsAndroid] = useState(false);
+
+  // ----------------------------------------------------------
   // Audio recording
   // ----------------------------------------------------------
 
@@ -332,6 +340,74 @@ export default function App() {
   const textareaRef = useRef(null);
 
   const isNearBottomRef = useRef(true);
+
+  // ==========================================================
+  // PWA install
+  // ==========================================================
+
+  useEffect(() => {
+    const android = /Android/i.test(navigator.userAgent || '');
+    setIsAndroid(android);
+
+    const standalone =
+      window.matchMedia('(display-mode: standalone)').matches ||
+      window.navigator.standalone === true;
+
+    if (standalone) {
+      setIsAppInstalled(true);
+    }
+
+    function handleBeforeInstallPrompt(event) {
+      // The custom install button is intended only for Android.
+      if (!android) {
+        return;
+      }
+
+      event.preventDefault();
+      setDeferredPrompt(event);
+    }
+
+    function handleAppInstalled() {
+      setIsAppInstalled(true);
+      setDeferredPrompt(null);
+    }
+
+    window.addEventListener(
+      'beforeinstallprompt',
+      handleBeforeInstallPrompt
+    );
+
+    window.addEventListener(
+      'appinstalled',
+      handleAppInstalled
+    );
+
+    return () => {
+      window.removeEventListener(
+        'beforeinstallprompt',
+        handleBeforeInstallPrompt
+      );
+
+      window.removeEventListener(
+        'appinstalled',
+        handleAppInstalled
+      );
+    };
+  }, []);
+
+  async function handleInstallClick() {
+    if (!deferredPrompt) {
+      return;
+    }
+
+    deferredPrompt.prompt();
+
+    try {
+      await deferredPrompt.userChoice;
+    } finally {
+      setDeferredPrompt(null);
+    }
+  }
 
   // ==========================================================
   // Cache messages
@@ -1032,6 +1108,30 @@ export default function App() {
 
   return (
     <div className="app">
+      {isAndroid && !isAppInstalled && deferredPrompt && (
+        <button
+          type="button"
+          className="install-pwa-button"
+          onClick={handleInstallClick}
+          style={{
+            position: 'fixed',
+            top: 'calc(15px + env(safe-area-inset-top))',
+            right: '15px',
+            zIndex: 100,
+            border: 'none',
+            borderRadius: '20px',
+            padding: '8px 16px',
+            backgroundColor: '#333333',
+            color: '#ffffff',
+            fontSize: '14px',
+            fontWeight: 500,
+            cursor: 'pointer',
+          }}
+        >
+          Установить
+        </button>
+      )}
+
       <main
         ref={chatContainerRef}
         className="chat-container"
