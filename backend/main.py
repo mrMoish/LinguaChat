@@ -5,235 +5,1285 @@ import base64
 import ssl
 import io
 from typing import Optional
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
+
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    Request,
+    UploadFile,
+    File,
+    Form,
+)
 from fastapi.middleware.cors import CORSMiddleware
+
 import httpx
 import asyncpg
 from dotenv import load_dotenv
+
 from PIL import Image, ImageOps
 import pillow_heif
 
-from prompts import get_text_prompt, get_image_prompt
+from prompts import get_unified_prompt
+
 
 load_dotenv()
 pillow_heif.register_heif_opener()
 
+
 app = FastAPI()
+
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Разрешить все домены (для MVP это нормально)
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*", "X-Session-Id"],
+    allow_headers=["*"],
 )
+
 
 DEFAULT_LANGUAGE = "Chinese"
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_URL = (
+    "https://openrouter.ai/api/v1/chat/completions"
+)
+TRANSCRIPTION_URL = (
+    "https://openrouter.ai/api/v1/audio/transcriptions"
+)
+
 DATABASE_URL = os.getenv("DATABASE_URL")
+
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+
 STORAGE_BUCKET = "chat-images"
 
-TEXT_MODEL = "openai/gpt-5.6-luna" # "deepseek/deepseek-chat"
-VISION_MODEL = "openai/gpt-5.6-luna" # google/gemini-2.0-flash-exp:free # google/gemini-2.5-flash-lite # google/gemini-3.8-flash
+TEXT_MODEL = "openai/gpt-5.6-luna"
+VISION_MODEL = "openai/gpt-5.6-luna"
+TRANSCRIPTION_MODEL = "openai/whisper-large-v3"
+
 
 db_pool = None
 
 
+# ============================================================
+# DATABASE
+# ============================================================
+
 @app.on_event("startup")
 async def startup():
     global db_pool
-    if DATABASE_URL:
-        try:
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            db_pool = await asyncpg.create_pool(
-                DATABASE_URL, min_size=1, max_size=5, timeout=60,
-                command_timeout=60, max_inactive_connection_lifetime=60,
-                ssl=ctx, statement_cache_size=0
+
+    if not DATABASE_URL:
+        print("DATABASE_URL is not configured.")
+        return
+
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+        db_pool = await asyncpg.create_pool(
+            DATABASE_URL,
+            min_size=1,
+            max_size=5,
+            timeout=60,
+            command_timeout=60,
+            max_inactive_connection_lifetime=60,
+            ssl=ctx,
+            statement_cache_size=0,
+        )
+
+        async with db_pool.acquire() as conn:
+
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_history (
+                    id SERIAL PRIMARY KEY,
+                    session_id UUID NOT NULL,
+                    role VARCHAR(50) NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TIMESTAMP WITH TIME ZONE
+                        DEFAULT CURRENT_TIMESTAMP
+                )
+                """
             )
-            async with db_pool.acquire() as conn:
-                await conn.execute(
-                    '''CREATE TABLE IF NOT EXISTS chat_history (id SERIAL PRIMARY KEY, session_id UUID NOT NULL, role VARCHAR(50) NOT NULL, content TEXT NOT NULL, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)''')
-                await conn.execute(
-                    '''CREATE TABLE IF NOT EXISTS user_settings (session_id UUID PRIMARY KEY, target_language_name VARCHAR(100) DEFAULT 'Chinese')''')
-                await conn.execute(
-                    "ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS message_type VARCHAR(20) DEFAULT 'text'")
-                await conn.execute("ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS media_url TEXT")
-            print("База данных успешно подключена!")
-        except Exception as e:
-            print(f"DB Error: {e}")
+
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_settings (
+                    session_id UUID PRIMARY KEY,
+                    target_language_name VARCHAR(100)
+                        DEFAULT 'Chinese'
+                )
+                """
+            )
+
+            await conn.execute(
+                """
+                ALTER TABLE chat_history
+                ADD COLUMN IF NOT EXISTS
+                message_type VARCHAR(20)
+                DEFAULT 'text'
+                """
+            )
+
+            await conn.execute(
+                """
+                ALTER TABLE chat_history
+                ADD COLUMN IF NOT EXISTS
+                media_url TEXT
+                """
+            )
+
+        print("База данных успешно подключена!")
+
+    except Exception as e:
+        print(f"DB Error: {e}")
 
 
 @app.on_event("shutdown")
 async def shutdown():
-    if db_pool: await db_pool.close()
+    if db_pool:
+        await db_pool.close()
 
 
-def get_session_id(req: Request):
-    return req.headers.get("X-Session-Id") or str(uuid.uuid4())
+# ============================================================
+# SESSION
+# ============================================================
+
+def get_session_id(
+    req: Request,
+    fallback_session_id: Optional[str] = None,
+):
+    """
+    Приоритет:
+
+    1. X-Session-Id header
+    2. session_id из Form/query
+    3. новый UUID
+    """
+
+    return (
+        req.headers.get("X-Session-Id")
+        or fallback_session_id
+        or req.query_params.get("session_id")
+        or str(uuid.uuid4())
+    )
 
 
-async def save_message(conn, session_id, user_text, ai_reply, msg_type="text", media_url=None):
+# ============================================================
+# DATABASE HELPERS
+# ============================================================
+
+async def save_message(
+    conn,
+    session_id,
+    user_text,
+    ai_reply,
+    msg_type="text",
+    media_url=None,
+):
     await conn.execute(
-        "INSERT INTO chat_history (session_id, role, content, message_type, media_url) VALUES ($1, $2, $3, $4, $5)",
-        session_id, "user", user_text, msg_type, media_url)
+        """
+        INSERT INTO chat_history
+        (
+            session_id,
+            role,
+            content,
+            message_type,
+            media_url
+        )
+        VALUES ($1, $2, $3, $4, $5)
+        """,
+        session_id,
+        "user",
+        user_text,
+        msg_type,
+        media_url,
+    )
+
     await conn.execute(
-        "INSERT INTO chat_history (session_id, role, content, message_type, media_url) VALUES ($1, $2, $3, $4, $5)",
-        session_id, "assistant", ai_reply, "text", None)
+        """
+        INSERT INTO chat_history
+        (
+            session_id,
+            role,
+            content,
+            message_type,
+            media_url
+        )
+        VALUES ($1, $2, $3, $4, $5)
+        """,
+        session_id,
+        "assistant",
+        ai_reply,
+        "text",
+        None,
+    )
 
 
-async def get_user_language(session_id: uuid.UUID) -> str:
-    if not db_pool: return DEFAULT_LANGUAGE
+async def get_user_language(
+    session_id: uuid.UUID,
+) -> str:
+
+    if not db_pool:
+        return DEFAULT_LANGUAGE
+
     try:
         async with db_pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT target_language_name FROM user_settings WHERE session_id = $1",
-                                      session_id)
-            if row and row["target_language_name"]: return row["target_language_name"]
+
+            row = await conn.fetchrow(
+                """
+                SELECT target_language_name
+                FROM user_settings
+                WHERE session_id = $1
+                """,
+                session_id,
+            )
+
+            if row and row["target_language_name"]:
+                return row["target_language_name"]
+
             await conn.execute(
-                "INSERT INTO user_settings (session_id, target_language_name) VALUES ($1, $2) ON CONFLICT (session_id) DO NOTHING",
-                session_id, DEFAULT_LANGUAGE)
+                """
+                INSERT INTO user_settings
+                (
+                    session_id,
+                    target_language_name
+                )
+                VALUES ($1, $2)
+                ON CONFLICT (session_id)
+                DO NOTHING
+                """,
+                session_id,
+                DEFAULT_LANGUAGE,
+            )
+
     except Exception as e:
-        print(f"Error getting language: {e}")
+        print(
+            f"Error getting language: {e}"
+        )
+
     return DEFAULT_LANGUAGE
 
 
-async def call_openrouter(messages: list, model: str):
-    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
-    payload = {"model": model, "messages": messages, "response_format": {"type": "json_object"}, "temperature": 0.7}
-    async with httpx.AsyncClient() as client:
-        response = await client.post(OPENROUTER_URL, headers=headers, json=payload, timeout=60.0)
-        if response.status_code != 200:
-            print(f"OpenRouter Error {response.status_code}: {response.text}")
-            if response.status_code == 429: raise HTTPException(status_code=429, detail="ИИ перегружен.")
-            raise HTTPException(status_code=response.status_code, detail="Ошибка ИИ.")
-        data = response.json()
-        if "choices" not in data or not data["choices"]: raise HTTPException(status_code=500,
-                                                                             detail="ИИ не вернул ответ.")
-        raw_text = data["choices"][0]["message"]["content"].strip()
-        try:
-            return json.loads(raw_text).get("translation", "Ошибка обработки ИИ.")
-        except json.JSONDecodeError:
-            raise HTTPException(status_code=500, detail="Ошибка формата ИИ.")
+RECENT_HISTORY_LIMIT = 8
 
 
-async def upload_to_supabase(jpeg_bytes: bytes) -> str:
-    file_name = f"{uuid.uuid4().hex}.jpg"
-    upload_url = f"{SUPABASE_URL}/storage/v1/object/{STORAGE_BUCKET}/{file_name}"
-    headers = {"Authorization": f"Bearer {SUPABASE_SERVICE_KEY}", "Content-Type": "image/jpeg", "x-upsert": "true"}
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(upload_url, headers=headers, content=jpeg_bytes, timeout=30.0)
-        if resp.status_code != 200:
-            print(f"Supabase Upload Error: {resp.text}")
-            raise HTTPException(500, "Failed to upload to Supabase Storage")
-    return f"{SUPABASE_URL}/storage/v1/object/public/{STORAGE_BUCKET}/{file_name}"
-
-
-RECENT_HISTORY_LIMIT = 8  # сколько последних сообщений диалога передавать модели для определения намерения
-
-
-async def get_recent_history(conn, session_id: uuid.UUID, limit: int = RECENT_HISTORY_LIMIT):
-    """Последние сообщения диалога (в хронологическом порядке) — нужны, чтобы модель могла
-    определить, отвечает ли пользователь на предыдущий вопрос AI, а не только по языку сообщения."""
+async def get_recent_history(
+    conn,
+    session_id: uuid.UUID,
+    limit: int = RECENT_HISTORY_LIMIT,
+):
     rows = await conn.fetch(
-        "SELECT role, content FROM chat_history WHERE session_id = $1 AND message_type = 'text' "
-        "ORDER BY created_at DESC LIMIT $2",
-        session_id, limit
+        """
+        SELECT role, content
+        FROM chat_history
+        WHERE session_id = $1
+        ORDER BY created_at DESC
+        LIMIT $2
+        """,
+        session_id,
+        limit,
     )
+
     return list(reversed(rows))
 
 
-async def process_text(text: str, session_id: uuid.UUID) -> dict:
-    target_lang = await get_user_language(session_id)
-    async with db_pool.acquire() as conn:
-        history_rows = await get_recent_history(conn, session_id)
+# ============================================================
+# OPENROUTER
+# ============================================================
 
-    history_messages = [{"role": r["role"], "content": r["content"]} for r in history_rows]
-    if not history_messages:
-        # Первое сообщение в диалоге — своего последнего вопроса у AI ещё не было
-        history_messages = [{"role": "assistant", "content": "Какой у вас уровень китайского?"}]
+async def call_openrouter(
+    messages: list,
+    model: str,
+):
 
-    print("history_messages: ", history_messages)
-    print('target_lang: ', target_lang)
-    messages = [
-        {"role": "system", "content": get_text_prompt(target_lang)},
-        *history_messages,
-        {"role": "user", "content": [{"type": "text", "text": text}]}
-    ]
-    translation = await call_openrouter(messages, model=TEXT_MODEL)
-    async with db_pool.acquire() as conn:
-        await save_message(conn, session_id, text, translation, msg_type="text")
-    return {"translation": translation}
+    headers = {
+        "Authorization": (
+            f"Bearer {OPENROUTER_API_KEY}"
+        ),
+        "Content-Type": "application/json",
+    }
 
+    payload = {
+        "model": model,
+        "messages": messages,
+        "response_format": {
+            "type": "json_object"
+        },
+        "temperature": 0.7,
+    }
 
-async def process_image(file: UploadFile, session_id: uuid.UUID) -> dict:
-    target_lang = await get_user_language(session_id)
-    contents = await file.read()
-    if len(contents) > 5 * 1024 * 1024: raise HTTPException(status_code=413, detail="Файл слишком большой.")
+    async with httpx.AsyncClient() as client:
+
+        response = await client.post(
+            OPENROUTER_URL,
+            headers=headers,
+            json=payload,
+            timeout=60.0,
+        )
+
+    if response.status_code != 200:
+
+        print(
+            f"OpenRouter Error "
+            f"{response.status_code}: "
+            f"{response.text}"
+        )
+
+        if response.status_code == 429:
+            raise HTTPException(
+                status_code=429,
+                detail="ИИ перегружен.",
+            )
+
+        raise HTTPException(
+            status_code=response.status_code,
+            detail="Ошибка ИИ.",
+        )
+
+    data = response.json()
+
+    if (
+        "choices" not in data
+        or not data["choices"]
+    ):
+        raise HTTPException(
+            status_code=500,
+            detail="ИИ не вернул ответ.",
+        )
+
+    raw_text = (
+        data["choices"][0]["message"]["content"]
+        .strip()
+    )
 
     try:
-        img = Image.open(io.BytesIO(contents))
-        img = ImageOps.exif_transpose(img)  # ПРИМЕНЯЕМ EXIF ОРИЕНТАЦИЮ
-        img = img.convert('RGB')
-        buffer = io.BytesIO()
-        img.save(buffer, format='JPEG', quality=85)
-        jpeg_bytes = buffer.getvalue()
-    except Exception as img_err:
-        print(f"Image processing error: {img_err}")
-        raise HTTPException(status_code=400, detail="Invalid image file")
 
-    media_url = await upload_to_supabase(jpeg_bytes)
-    image_base64 = base64.b64encode(jpeg_bytes).decode('utf-8')
-    user_content = [{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}]
-    messages = [
-        {"role": "system", "content": get_image_prompt(target_lang)},
-        {"role": "user", "content": user_content}
-    ]
-    translation = await call_openrouter(messages, model=VISION_MODEL)
+        parsed = json.loads(raw_text)
+
+        return parsed.get(
+            "translation",
+            "Ошибка обработки ИИ.",
+        )
+
+    except json.JSONDecodeError:
+
+        print(
+            "Invalid JSON returned by model:",
+            raw_text,
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail="Ошибка формата ИИ.",
+        )
+
+
+# ============================================================
+# SUPABASE STORAGE
+# ============================================================
+
+async def upload_to_supabase(
+    file_bytes: bytes,
+    content_type: str,
+    extension: str,
+) -> str:
+
+    file_name = (
+        f"{uuid.uuid4().hex}.{extension}"
+    )
+
+    upload_url = (
+        f"{SUPABASE_URL}"
+        f"/storage/v1/object/"
+        f"{STORAGE_BUCKET}/"
+        f"{file_name}"
+    )
+
+    headers = {
+        "Authorization": (
+            f"Bearer {SUPABASE_SERVICE_KEY}"
+        ),
+        "Content-Type": content_type,
+        "x-upsert": "true",
+    }
+
+    async with httpx.AsyncClient() as client:
+
+        resp = await client.post(
+            upload_url,
+            headers=headers,
+            content=file_bytes,
+            timeout=30.0,
+        )
+
+    if resp.status_code not in (200, 201):
+
+        print(
+            f"Supabase upload error "
+            f"{resp.status_code}: "
+            f"{resp.text}"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Failed to upload to "
+                "Supabase Storage"
+            ),
+        )
+
+    return (
+        f"{SUPABASE_URL}"
+        f"/storage/v1/object/public/"
+        f"{STORAGE_BUCKET}/"
+        f"{file_name}"
+    )
+
+
+# ============================================================
+# AUDIO
+# ============================================================
+
+AUDIO_EXTENSIONS = {
+    ".webm",
+    ".mp3",
+    ".mpeg",
+    ".mp4",
+    ".m4a",
+    ".wav",
+    ".ogg",
+    ".oga",
+    ".flac",
+    ".aac",
+}
+
+
+AUDIO_MIME_TYPES = {
+    "audio/webm",
+    "audio/mpeg",
+    "audio/mp3",
+    "audio/wav",
+    "audio/x-wav",
+    "audio/mp4",
+    "audio/x-m4a",
+    "audio/ogg",
+    "audio/flac",
+    "audio/aac",
+    "video/mp4",
+    "video/webm",
+    "application/mp4",
+}
+
+
+def is_audio_file(
+    content_type: str,
+    filename: str = "",
+) -> bool:
+
+    mime_type = (
+        content_type
+        .split(";")[0]
+        .lower()
+        .strip()
+    )
+
+    if mime_type in AUDIO_MIME_TYPES:
+        return True
+
+    filename_lower = (
+        filename or ""
+    ).lower()
+
+    return any(
+        filename_lower.endswith(ext)
+        for ext in AUDIO_EXTENSIONS
+    )
+
+
+def get_audio_format(
+    content_type: str,
+    filename: str = "",
+) -> str:
+
+    mime_type = (
+        content_type
+        .split(";")[0]
+        .lower()
+        .strip()
+    )
+
+    format_map = {
+        "audio/webm": "webm",
+        "video/webm": "webm",
+
+        "audio/mpeg": "mp3",
+        "audio/mp3": "mp3",
+
+        "audio/wav": "wav",
+        "audio/x-wav": "wav",
+
+        "audio/mp4": "m4a",
+        "audio/x-m4a": "m4a",
+        "video/mp4": "m4a",
+        "application/mp4": "m4a",
+
+        "audio/ogg": "ogg",
+
+        "audio/flac": "flac",
+
+        "audio/aac": "aac",
+    }
+
+    if mime_type in format_map:
+        return format_map[mime_type]
+
+    filename_lower = (
+        filename or ""
+    ).lower()
+
+    if filename_lower.endswith(".m4a"):
+        return "m4a"
+
+    if filename_lower.endswith(".mp4"):
+        return "m4a"
+
+    if filename_lower.endswith(".mp3"):
+        return "mp3"
+
+    if filename_lower.endswith(".wav"):
+        return "wav"
+
+    if filename_lower.endswith(".ogg"):
+        return "ogg"
+
+    if filename_lower.endswith(".flac"):
+        return "flac"
+
+    if filename_lower.endswith(".aac"):
+        return "aac"
+
+    if filename_lower.endswith(".webm"):
+        return "webm"
+
+    return "webm"
+
+
+def get_audio_storage_content_type(
+    audio_format: str,
+) -> str:
+
+    content_types = {
+        "webm": "audio/webm",
+        "mp3": "audio/mpeg",
+        "m4a": "audio/mp4",
+        "wav": "audio/wav",
+        "ogg": "audio/ogg",
+        "flac": "audio/flac",
+        "aac": "audio/aac",
+    }
+
+    return content_types.get(
+        audio_format,
+        "application/octet-stream",
+    )
+
+
+async def transcribe_audio(
+    audio_bytes: bytes,
+    content_type: str,
+    filename: str = "",
+) -> str:
+
+    audio_base64 = base64.b64encode(
+        audio_bytes
+    ).decode("utf-8")
+
+    audio_format = get_audio_format(
+        content_type,
+        filename,
+    )
+
+    payload = {
+        "model": TRANSCRIPTION_MODEL,
+        "input_audio": {
+            "data": audio_base64,
+            "format": audio_format,
+        },
+    }
+
+    headers = {
+        "Authorization": (
+            f"Bearer {OPENROUTER_API_KEY}"
+        ),
+        "Content-Type": "application/json",
+    }
+
+    print(
+        "Transcribing audio: "
+        f"format={audio_format}, "
+        f"content_type={content_type}, "
+        f"filename={filename}, "
+        f"size={len(audio_bytes)} bytes"
+    )
+
+    async with httpx.AsyncClient() as client:
+
+        resp = await client.post(
+            TRANSCRIPTION_URL,
+            headers=headers,
+            json=payload,
+            timeout=60.0,
+        )
+
+    if resp.status_code != 200:
+
+        print(
+            f"Transcription error "
+            f"{resp.status_code}: "
+            f"{resp.text}"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail="Ошибка распознавания аудио.",
+        )
+
+    data = resp.json()
+
+    if "text" not in data:
+
+        print(
+            "Unexpected transcription response:",
+            data,
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail="ИИ не вернул текст аудио.",
+        )
+
+    transcription = (
+        data["text"].strip()
+    )
+
+    print(
+        "Transcription result: "
+        f"{transcription}"
+    )
+
+    if not transcription:
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Не удалось распознать "
+                "речь в аудио."
+            ),
+        )
+
+    return transcription
+
+
+# ============================================================
+# MAIN AI PROCESSING
+# ============================================================
+
+async def process_message(
+    user_content,
+    session_id,
+    msg_type="text",
+    media_url=None,
+    user_text_for_history="",
+):
+
+    target_lang = await get_user_language(
+        session_id
+    )
+
     async with db_pool.acquire() as conn:
-        await save_message(conn, session_id, "", translation, msg_type="image", media_url=media_url)
-    return {"translation": translation, "media_url": media_url}
 
+        history_rows = await get_recent_history(
+            conn,
+            session_id,
+        )
+
+    history_messages = [
+        {
+            "role": r["role"],
+            "content": r["content"],
+        }
+        for r in history_rows
+    ]
+
+    if not history_messages:
+
+        history_messages = [
+            {
+                "role": "assistant",
+                "content": (
+                    "Какой у вас уровень китайского?"
+                ),
+            }
+        ]
+
+    messages = [
+        {
+            "role": "system",
+            "content": get_unified_prompt(
+                target_lang
+            ),
+        },
+        *history_messages,
+        {
+            "role": "user",
+            "content": user_content,
+        },
+    ]
+
+    # Сейчас TEXT_MODEL и VISION_MODEL
+    # одинаковые, поэтому можно использовать
+    # TEXT_MODEL для всех сообщений.
+    #
+    # Если позже модели будут различаться,
+    # здесь можно определить модель
+    # в зависимости от типа сообщения.
+
+    translation = await call_openrouter(
+        messages,
+        model=TEXT_MODEL,
+    )
+
+    async with db_pool.acquire() as conn:
+
+        await save_message(
+            conn,
+            session_id,
+            user_text_for_history,
+            translation,
+            msg_type=msg_type,
+            media_url=media_url,
+        )
+
+    return {
+        "translation": translation,
+        "media_url": media_url,
+    }
+
+
+# ============================================================
+# TEXT
+# ============================================================
+
+async def process_text(
+    text: str,
+    session_id: uuid.UUID,
+) -> dict:
+
+    user_content = [
+        {
+            "type": "text",
+            "text": text,
+        }
+    ]
+
+    return await process_message(
+        user_content,
+        session_id,
+        msg_type="text",
+        user_text_for_history=text,
+    )
+
+
+# ============================================================
+# IMAGE
+# ============================================================
+
+async def process_image(
+    file: UploadFile,
+    session_id: uuid.UUID,
+) -> dict:
+
+    contents = await file.read()
+
+    if len(contents) > 5 * 1024 * 1024:
+
+        raise HTTPException(
+            status_code=413,
+            detail="Файл слишком большой.",
+        )
+
+    try:
+
+        img = Image.open(
+            io.BytesIO(contents)
+        )
+
+        img = ImageOps.exif_transpose(img)
+        img = img.convert("RGB")
+
+        buffer = io.BytesIO()
+
+        img.save(
+            buffer,
+            format="JPEG",
+            quality=85,
+        )
+
+        jpeg_bytes = buffer.getvalue()
+
+    except Exception as img_err:
+
+        print(
+            f"Image processing error: "
+            f"{img_err}"
+        )
+
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid image file",
+        )
+
+    media_url = await upload_to_supabase(
+        jpeg_bytes,
+        "image/jpeg",
+        "jpg",
+    )
+
+    image_base64 = base64.b64encode(
+        jpeg_bytes
+    ).decode("utf-8")
+
+    user_content = [
+        {
+            "type": "image_url",
+            "image_url": {
+                "url": (
+                    "data:image/jpeg;base64,"
+                    f"{image_base64}"
+                )
+            },
+        },
+        {
+            "type": "text",
+            "text": (
+                "(User sent an image. "
+                "Please analyze it.)"
+            ),
+        },
+    ]
+
+    return await process_message(
+        user_content,
+        session_id,
+        msg_type="image",
+        media_url=media_url,
+        user_text_for_history="",
+    )
+
+
+# ============================================================
+# /api/message
+# ============================================================
 
 @app.post("/api/message")
-async def message(req: Request, text: Optional[str] = Form(None), file: UploadFile = File(None)):
-    if not OPENROUTER_API_KEY: raise HTTPException(status_code=500, detail="API Key not configured")
-    if not db_pool: raise HTTPException(status_code=503, detail="База данных не подключена.")
-    session_id_str = get_session_id(req)
-    session_id = uuid.UUID(session_id_str)
-    if file:
-        if file.content_type and file.content_type.startswith("image/"):
-            result = await process_image(file, session_id)
-            return {"session_id": session_id_str, "translation": result["translation"],
-                    "media_url": result["media_url"]}
-        else:
-            raise HTTPException(status_code=400, detail="Только изображения.")
-    elif text:
-        result = await process_text(text, session_id)
-        return {"session_id": session_id_str, "translation": result["translation"]}
-    else:
-        raise HTTPException(status_code=400, detail="Сообщение пусто.")
+async def message(
+    req: Request,
+    text: Optional[str] = Form(None),
+    file: UploadFile = File(None),
+    session_id_form: Optional[str] = Form(
+        None,
+        alias="session_id",
+    ),
+):
 
+    if not OPENROUTER_API_KEY:
+
+        raise HTTPException(
+            status_code=500,
+            detail="API Key not configured",
+        )
+
+    if not db_pool:
+
+        raise HTTPException(
+            status_code=503,
+            detail="База данных не подключена.",
+        )
+
+    # --------------------------------------------------------
+    # SESSION
+    # --------------------------------------------------------
+
+    session_id_str = get_session_id(
+        req,
+        session_id_form,
+    )
+
+    try:
+
+        session_id = uuid.UUID(
+            session_id_str
+        )
+
+    except ValueError:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid session ID",
+        )
+
+    # --------------------------------------------------------
+    # FILE
+    # --------------------------------------------------------
+
+    if file:
+
+        contents = await file.read()
+
+        if len(contents) > 5 * 1024 * 1024:
+
+            raise HTTPException(
+                status_code=413,
+                detail="Файл слишком большой.",
+            )
+
+        content_type = (
+            file.content_type or ""
+        ).lower()
+
+        filename = file.filename or ""
+
+        print(
+            "Received file: "
+            f"name={filename}, "
+            f"type={content_type}, "
+            f"size={len(contents)}"
+        )
+
+        # ====================================================
+        # IMAGE
+        # ====================================================
+
+        if content_type.startswith(
+            "image/"
+        ):
+
+            try:
+
+                img = Image.open(
+                    io.BytesIO(contents)
+                )
+
+                img = ImageOps.exif_transpose(
+                    img
+                )
+
+                img = img.convert("RGB")
+
+                buffer = io.BytesIO()
+
+                img.save(
+                    buffer,
+                    format="JPEG",
+                    quality=85,
+                )
+
+                jpeg_bytes = (
+                    buffer.getvalue()
+                )
+
+            except Exception as e:
+
+                print(
+                    f"Image processing error: "
+                    f"{e}"
+                )
+
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid image file",
+                )
+
+            media_url = (
+                await upload_to_supabase(
+                    jpeg_bytes,
+                    "image/jpeg",
+                    "jpg",
+                )
+            )
+
+            image_base64 = (
+                base64.b64encode(
+                    jpeg_bytes
+                ).decode("utf-8")
+            )
+
+            user_content = [
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": (
+                            "data:image/jpeg;base64,"
+                            f"{image_base64}"
+                        )
+                    },
+                },
+                {
+                    "type": "text",
+                    "text": (
+                        "(User sent an image. "
+                        "Please analyze it.)"
+                    ),
+                },
+            ]
+
+            result = await process_message(
+                user_content,
+                session_id,
+                msg_type="image",
+                media_url=media_url,
+                user_text_for_history="",
+            )
+
+            return {
+                "translation": result[
+                    "translation"
+                ],
+                "media_url": media_url,
+                "session_id": session_id_str,
+            }
+
+        # ====================================================
+        # AUDIO
+        # ====================================================
+
+        elif is_audio_file(
+            content_type,
+            filename,
+        ):
+
+            audio_format = get_audio_format(
+                content_type,
+                filename,
+            )
+
+            storage_content_type = (
+                get_audio_storage_content_type(
+                    audio_format
+                )
+            )
+
+            print(
+                "Audio detected: "
+                f"format={audio_format}, "
+                f"storage_type="
+                f"{storage_content_type}"
+            )
+
+            # ----------------------------------------------
+            # Upload audio
+            # ----------------------------------------------
+
+            media_url = (
+                await upload_to_supabase(
+                    contents,
+                    storage_content_type,
+                    audio_format,
+                )
+            )
+
+            # ----------------------------------------------
+            # Transcription
+            # ----------------------------------------------
+
+            transcription = (
+                await transcribe_audio(
+                    contents,
+                    content_type,
+                    filename,
+                )
+            )
+
+            # ----------------------------------------------
+            # Send transcription to AI
+            # ----------------------------------------------
+
+            user_content = [
+                {
+                    "type": "text",
+                    "text": (
+                        "(User sent an audio "
+                        "message. "
+                        "Here is the transcription: "
+                        f"'{transcription}')"
+                    ),
+                }
+            ]
+
+            result = await process_message(
+                user_content,
+                session_id,
+                msg_type="audio",
+                media_url=media_url,
+                user_text_for_history=(
+                    transcription
+                ),
+            )
+
+            # ----------------------------------------------
+            # IMPORTANT:
+            #
+            # transcription is returned separately.
+            # This is what the frontend uses to show:
+            #
+            # [▶] transcription
+            #
+            # instead of two separate bubbles.
+            # ----------------------------------------------
+
+            return {
+                "translation": result[
+                    "translation"
+                ],
+                "media_url": media_url,
+                "transcription": transcription,
+                "session_id": session_id_str,
+            }
+
+        # ====================================================
+        # UNSUPPORTED FILE
+        # ====================================================
+
+        else:
+
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Unsupported file type."
+                ),
+            )
+
+    # ========================================================
+    # TEXT
+    # ========================================================
+
+    elif text and text.strip():
+
+        result = await process_text(
+            text.strip(),
+            session_id,
+        )
+
+        return {
+            "translation": result[
+                "translation"
+            ],
+            "media_url": None,
+            "session_id": session_id_str,
+        }
+
+    # ========================================================
+    # EMPTY
+    # ========================================================
+
+    else:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Message is empty.",
+        )
+
+
+# ============================================================
+# /api/history
+# ============================================================
 
 @app.get("/api/history")
-async def get_history(req: Request):
-    session_id_str = get_session_id(req)
-    session_id = uuid.UUID(session_id_str)
-    if db_pool:
-        async with db_pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT role, content, message_type, media_url FROM chat_history WHERE session_id = $1 ORDER BY created_at ASC",
-                session_id)
-            history = [{"role": r["role"], "content": r["content"], "message_type": r["message_type"],
-                        "media_url": r["media_url"]} for r in rows]
-            return {"session_id": session_id_str, "history": history}
-    return {"session_id": session_id_str, "history": []}
+async def get_history(
+    req: Request,
+    session_id: Optional[str] = None,
+):
 
+    session_id_str = get_session_id(
+        req,
+        session_id,
+    )
+
+    try:
+
+        session_uuid = uuid.UUID(
+            session_id_str
+        )
+
+    except ValueError:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid session ID",
+        )
+
+    if db_pool:
+
+        async with db_pool.acquire() as conn:
+
+            rows = await conn.fetch(
+                """
+                SELECT
+                    role,
+                    content,
+                    message_type,
+                    media_url
+                FROM chat_history
+                WHERE session_id = $1
+                ORDER BY created_at ASC
+                """,
+                session_uuid,
+            )
+
+            history = [
+                {
+                    "role": r["role"],
+                    "content": r["content"],
+                    "message_type": (
+                        r["message_type"]
+                        or "text"
+                    ),
+                    "media_url": (
+                        r["media_url"]
+                    ),
+                }
+                for r in rows
+            ]
+
+            return {
+                "session_id": session_id_str,
+
+                # Основное имя
+                "history": history,
+
+                # Для совместимости
+                # со старым frontend
+                "messages": history,
+            }
+
+    return {
+        "session_id": session_id_str,
+        "history": [],
+        "messages": [],
+    }
+
+
+# ============================================================
+# ROOT
+# ============================================================
 
 @app.get("/")
 def read_root():
-    return {"status": "Backend is running"}
+    return {
+        "status": "Backend is running"
+    }

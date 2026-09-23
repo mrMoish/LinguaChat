@@ -3,441 +3,1277 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import './App.css';
 
-// IndexedDB Helper
+// ============================================================
+// IndexedDB
+// ============================================================
+
 const DB_NAME = 'linguachat';
 const STORE_NAME = 'images';
+
 function openDB() {
-  return new Promise((resolve) => {
-    const req = indexedDB.open(DB_NAME, 1);
-    req.onupgradeneeded = (e) => {
-      const db = e.target.result;
-      if (!db.objectStoreNames.contains(STORE_NAME)) db.createObjectStore(STORE_NAME);
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, 1);
+
+    request.onupgradeneeded = () => {
+      const db = request.result;
+
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME);
+      }
     };
-    req.onsuccess = (e) => resolve(e.target.result);
-    req.onerror = () => resolve(null);
+
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
   });
 }
+
 async function idbGet(key) {
-  const db = await openDB();
-  if (!db) return null;
-  return new Promise((resolve) => {
-    const tx = db.transaction(STORE_NAME, 'readonly');
-    const req = tx.objectStore(STORE_NAME).get(key);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => resolve(null);
-  });
+  try {
+    const db = await openDB();
+
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_NAME, 'readonly');
+      const store = transaction.objectStore(STORE_NAME);
+      const request = store.get(key);
+
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  } catch {
+    return null;
+  }
 }
-async function idbSet(key, val) {
-  const db = await openDB();
-  if (!db) return;
-  return new Promise((resolve) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite');
-    tx.objectStore(STORE_NAME).put(val, key);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => resolve();
-  });
+
+async function idbSet(key, value) {
+  try {
+    const db = await openDB();
+
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_NAME, 'readwrite');
+      const store = transaction.objectStore(STORE_NAME);
+      const request = store.put(value, key);
+
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    });
+  } catch {
+    // Ignore IndexedDB errors.
+  }
 }
+
+// ============================================================
+// Constants
+// ============================================================
+
+const PAGE_SIZE = 20;
+
+const WELCOME_MESSAGES = [
+  'Отправьте текст или фото для перевода',
+  'Или какой у вас уровень китайского?',
+];
+
+// ============================================================
+// Helpers
+// ============================================================
 
 function loadCachedMessages() {
   try {
-    const cached = localStorage.getItem('translator_chat_history');
-    if (cached) {
-      const parsed = JSON.parse(cached);
-      if (Array.isArray(parsed)) return parsed;
+    const saved = localStorage.getItem('translator_chat_history');
+
+    if (!saved) {
+      return [];
     }
-  } catch (e) { console.error("Cache load error", e); }
-  return [];
+
+    const parsed = JSON.parse(saved);
+
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
-function Typewriter() {
-  const phrases = ["Отправьте текст или фото для перевода", "Или какой у вас уровень китайского?"];
-  const [text, setText] = useState("");
-  const [phraseIndex, setPhraseIndex] = useState(0);
-  const [isDeleting, setIsDeleting] = useState(false);
-  const [speed, setSpeed] = useState(100);
+function formatRecordingTime(seconds) {
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+
+  return `${String(minutes).padStart(2, '0')}:${String(
+    remainingSeconds
+  ).padStart(2, '0')}`;
+}
+
+// ============================================================
+// Typewriter
+// ============================================================
+
+function Typewriter({ texts }) {
+  const [index, setIndex] = useState(0);
+  const [text, setText] = useState('');
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
-    const currentPhrase = phrases[phraseIndex];
-    let timer;
-    if (!isDeleting && text === currentPhrase) {
-      timer = setTimeout(() => setIsDeleting(true), 2000);
-    } else if (isDeleting && text === "") {
-      setIsDeleting(false);
-      setPhraseIndex((prev) => (prev + 1) % phrases.length);
-    } else {
-      timer = setTimeout(() => {
-        setText(prev => isDeleting ? currentPhrase.substring(0, prev.length - 1) : currentPhrase.substring(0, prev.length + 1));
-      }, isDeleting ? speed / 2 : speed);
+    const currentText = texts[index];
+
+    let timeout;
+
+    if (!deleting && text.length < currentText.length) {
+      timeout = setTimeout(() => {
+        setText(currentText.slice(0, text.length + 1));
+      }, 45);
+    } else if (!deleting && text.length === currentText.length) {
+      timeout = setTimeout(() => {
+        setDeleting(true);
+      }, 1800);
+    } else if (deleting && text.length > 0) {
+      timeout = setTimeout(() => {
+        setText(currentText.slice(0, text.length - 1));
+      }, 25);
+    } else if (deleting && text.length === 0) {
+      setDeleting(false);
+      setIndex((prev) => (prev + 1) % texts.length);
     }
-    return () => clearTimeout(timer);
-  }, [text, isDeleting, phraseIndex]);
+
+    return () => clearTimeout(timeout);
+  }, [text, deleting, index, texts]);
 
   return (
-    <div className="empty-state">
-      <span className="typewriter">{text}<span className="cursor">|</span></span>
+    <div className="welcome-message">
+      {text}
+      <span className="typewriter-cursor">|</span>
     </div>
   );
 }
 
-const PAGE_SIZE = 20;
+// ============================================================
+// SVG Icons
+// ============================================================
 
-function App() {
+function SendIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="22"
+      height="22"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M22 2L11 13" />
+      <path d="M22 2L15 22L11 13L2 9L22 2Z" />
+    </svg>
+  );
+}
+
+function MicIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="23"
+      height="23"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <rect x="9" y="2" width="6" height="12" rx="3" />
+      <path d="M5 10a7 7 0 0 0 14 0" />
+      <path d="M12 17v5" />
+      <path d="M8 22h8" />
+    </svg>
+  );
+}
+
+function AttachmentIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="22"
+      height="22"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 1 1-2.83-2.83l8.49-8.48" />
+    </svg>
+  );
+}
+
+function CloseIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="22"
+      height="22"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M6 6L18 18" />
+      <path d="M18 6L6 18" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="23"
+      height="23"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M5 12l4 4L19 6" />
+    </svg>
+  );
+}
+
+function PlayIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="20"
+      height="20"
+      fill="currentColor"
+    >
+      <path d="M8 5.5v13L18 12 8 5.5z" />
+    </svg>
+  );
+}
+
+function PauseIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="18"
+      height="18"
+      fill="currentColor"
+    >
+      <rect x="7" y="5" width="4" height="14" rx="1" />
+      <rect x="13" y="5" width="4" height="14" rx="1" />
+    </svg>
+  );
+}
+
+// ============================================================
+// App
+// ============================================================
+
+export default function App() {
+  const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
+
+  // ----------------------------------------------------------
+  // Messages
+  // ----------------------------------------------------------
+
   const [allMessages, setAllMessages] = useState(loadCachedMessages);
   const [visibleMessages, setVisibleMessages] = useState([]);
+
   const [currentPage, setCurrentPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
 
+  // ----------------------------------------------------------
+  // Input
+  // ----------------------------------------------------------
+
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+
+  // ----------------------------------------------------------
+  // History
+  // ----------------------------------------------------------
+
   const [isSyncingHistory, setIsSyncingHistory] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
-  const [sessionId, setSessionId] = useState(() => localStorage.getItem('translator_session_id') || null);
+
+  const [sessionId, setSessionId] = useState(
+    () => localStorage.getItem('translator_session_id') || null
+  );
+
+  // ----------------------------------------------------------
+  // UI
+  // ----------------------------------------------------------
+
   const [lightboxSrc, setLightboxSrc] = useState(null);
 
-  // Состояния для клавиатуры и viewport
-  const [viewportHeight, setViewportHeight] = useState(window.innerHeight);
-  const [bottomOffset, setBottomOffset] = useState(0);
+  // ----------------------------------------------------------
+  // Audio recording
+  // ----------------------------------------------------------
+
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingTime, setRecordingTime] = useState(0);
+
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
+  const timerRef = useRef(null);
+
+  // ----------------------------------------------------------
+  // Audio playback
+  // ----------------------------------------------------------
+
+  const [playingAudio, setPlayingAudio] = useState(null);
+  const audioRef = useRef(null);
+
+  // ----------------------------------------------------------
+  // Refs
+  // ----------------------------------------------------------
 
   const chatContainerRef = useRef(null);
   const fileInputRef = useRef(null);
   const textareaRef = useRef(null);
+
   const isNearBottomRef = useRef(true);
 
-  const [deferredPrompt, setDeferredPrompt] = useState(null);
-  const [isAppInstalled, setIsAppInstalled] = useState(false);
-  const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
+  // ==========================================================
+  // Cache messages
+  // ==========================================================
 
   useEffect(() => {
-    const startIdx = Math.max(0, allMessages.length - currentPage * PAGE_SIZE);
-    setVisibleMessages(allMessages.slice(startIdx));
-    setHasMore(startIdx > 0);
-  }, [allMessages, currentPage]);
-
-  useLayoutEffect(() => {
-    window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'auto' });
-  }, []);
-
-  // Обработка visualViewport для клавиатуры
-  useEffect(() => {
-    const onResize = () => {
-      const offset = window.innerHeight - visualViewport.height - visualViewport.offsetTop;
-      setBottomOffset(offset > 0 ? offset : 0);
-      setViewportHeight(visualViewport.height);
-    };
-    window.visualViewport.addEventListener('resize', onResize);
-    onResize();
-    return () => window.visualViewport.removeEventListener('resize', onResize);
-  }, []);
-
-  useEffect(() => {
-    if (!sessionId) return;
-    const syncHistory = async () => {
-      setIsSyncingHistory(true);
-      try {
-        const response = await fetch(`${backendUrl}/api/history`, { headers: { 'X-Session-Id': sessionId } });
-        if (response.ok) {
-          const data = await response.json();
-          if (data.history) {
-            const historyWithImages = await Promise.all(data.history.map(async (msg) => {
-              if (msg.media_url) {
-                const localImg = await idbGet(msg.media_url);
-                if (localImg) return { ...msg, image: localImg };
-              }
-              return msg;
-            }));
-            setAllMessages(historyWithImages);
-            setCurrentPage(1);
-            localStorage.setItem('translator_chat_history', JSON.stringify(historyWithImages.map(m => {
-              const { image, ...rest } = m; return rest;
-            })));
-            setTimeout(() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' }), 50);
-          }
-        }
-      } catch (error) {
-        console.error('Ошибка синхронизации истории:', error);
-      } finally {
-        setIsSyncingHistory(false);
-      }
-    };
-    syncHistory();
-  }, []);
-
-  useEffect(() => {
-    if (allMessages.length > 0) {
-      try {
-        const cleanMessages = allMessages.map(m => {
-          const { image, ...rest } = m;
-          return rest;
-        });
-        localStorage.setItem('translator_chat_history', JSON.stringify(cleanMessages));
-      } catch (e) { console.error("LocalStorage save error", e); }
+    try {
+      localStorage.setItem(
+        'translator_chat_history',
+        JSON.stringify(allMessages)
+      );
+    } catch {
+      // Ignore storage errors.
     }
   }, [allMessages]);
 
+  // ==========================================================
+  // Visible messages / pagination
+  // ==========================================================
+
   useEffect(() => {
-    const handleScroll = () => {
-      const scrollPosition = window.innerHeight + window.scrollY;
-      const pageHeight = document.body.offsetHeight;
+    const total = allMessages.length;
 
-      if (scrollPosition >= pageHeight - 100) {
-        isNearBottomRef.current = true;
-        setShowScrollBtn(false);
-      } else {
-        isNearBottomRef.current = false;
+    const start = Math.max(0, total - PAGE_SIZE * currentPage);
+
+    setVisibleMessages(allMessages.slice(start));
+
+    setHasMore(start > 0);
+  }, [allMessages, currentPage]);
+
+  // ==========================================================
+  // Sync history from backend
+  // ==========================================================
+
+  useEffect(() => {
+    if (!sessionId) {
+      return;
+    }
+
+    let cancelled = false;
+
+    async function loadHistory() {
+      setIsSyncingHistory(true);
+
+      try {
+        const response = await fetch(
+          `${backendUrl}/api/history?session_id=${encodeURIComponent(
+            sessionId
+          )}`
+        );
+
+        if (!response.ok) {
+          throw new Error(`History request failed: ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        if (cancelled) {
+          return;
+        }
+
+        if (Array.isArray(data.messages)) {
+          const messages = [];
+
+          for (const message of data.messages) {
+            let image = null;
+
+            if (message.message_type === 'image' && message.media_url) {
+              image = message.media_url;
+            }
+
+            messages.push({
+              role: message.role,
+              content: message.content || '',
+              message_type: message.message_type || 'text',
+              media_url: message.media_url || null,
+              image,
+              audio: null,
+            });
+          }
+
+          setAllMessages(messages);
+          setCurrentPage(1);
+        }
+      } catch (error) {
+        console.error('Failed to load history:', error);
+      } finally {
+        if (!cancelled) {
+          setIsSyncingHistory(false);
+        }
       }
+    }
 
-      if (window.scrollY < 200 && hasMore && !isLoadingMore) {
+    loadHistory();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, backendUrl]);
+
+  // ==========================================================
+  // Initial scroll to bottom
+  // ==========================================================
+
+  useLayoutEffect(() => {
+    if (visibleMessages.length === 0) {
+      return;
+    }
+
+    window.scrollTo({
+      top: document.documentElement.scrollHeight,
+      behavior: 'auto',
+    });
+  }, []);
+
+  // ==========================================================
+  // Auto scroll
+  // ==========================================================
+
+  useEffect(() => {
+    if (!isNearBottomRef.current) {
+      return;
+    }
+
+    if (visibleMessages.length === 0) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      window.scrollTo({
+        top: document.documentElement.scrollHeight,
+        behavior: 'smooth',
+      });
+    }, 50);
+
+    return () => clearTimeout(timer);
+  }, [visibleMessages.length, isLoading]);
+
+  // ==========================================================
+  // Scroll handler
+  // ==========================================================
+
+  useEffect(() => {
+    function handleScroll() {
+      const scrollTop = window.scrollY;
+
+      const viewportBottom =
+        window.innerHeight + window.scrollY;
+
+      const documentHeight =
+        document.documentElement.scrollHeight;
+
+      isNearBottomRef.current =
+        documentHeight - viewportBottom < 180;
+
+      if (
+        scrollTop < 200 &&
+        hasMore &&
+        !isLoadingMore
+      ) {
         setIsLoadingMore(true);
-        const oldScrollHeight = document.body.scrollHeight;
 
-        const nextPage = currentPage + 1;
-        const startIdx = Math.max(0, allMessages.length - nextPage * PAGE_SIZE);
-        const newVisible = allMessages.slice(startIdx);
-
-        setVisibleMessages(newVisible);
-        setHasMore(startIdx > 0);
-        setCurrentPage(nextPage);
-
-        requestAnimationFrame(() => {
-          const newScrollHeight = document.body.scrollHeight;
-          window.scrollTo({ top: newScrollHeight - oldScrollHeight, behavior: 'auto' });
+        setTimeout(() => {
+          setCurrentPage((page) => page + 1);
           setIsLoadingMore(false);
-        });
+        }, 100);
+      }
+    }
+
+    window.addEventListener('scroll', handleScroll);
+
+    return () => {
+      window.removeEventListener('scroll', handleScroll);
+    };
+  }, [hasMore, isLoadingMore]);
+
+  // ==========================================================
+  // Cleanup audio on unmount
+  // ==========================================================
+
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
       }
     };
-    window.addEventListener('scroll', handleScroll);
-    return () => window.removeEventListener('scroll', handleScroll);
-  }, [hasMore, isLoadingMore, currentPage, allMessages, visibleMessages.length]);
-
-  useEffect(() => {
-    if (isNearBottomRef.current && visibleMessages.length > 0) {
-      const timer = setTimeout(() => {
-        window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
-      }, 100);
-      return () => clearTimeout(timer);
-    }
-  }, [visibleMessages, isLoading, isSyncingHistory]);
-
-  useEffect(() => {
-    if (window.matchMedia('(display-mode: standalone)').matches) setIsAppInstalled(true);
-    const handleBeforeInstallPrompt = (e) => { e.preventDefault(); setDeferredPrompt(e); };
-    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-    return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
   }, []);
 
+  // ==========================================================
+  // Textarea auto resize
+  // ==========================================================
+
   useEffect(() => {
-    if (textareaRef.current) textareaRef.current.focus();
-  }, []);
+    const textarea = textareaRef.current;
 
-  const handleInstallClick = async () => {
-    if (!deferredPrompt) return;
-    deferredPrompt.prompt();
-    const { outcome } = await deferredPrompt.userChoice;
-    if (outcome === 'accepted') setIsAppInstalled(true);
-    setDeferredPrompt(null);
-  };
-
-  const sendMessage = async (text, file, retryIdx = null) => {
-    if (isLoading || (!text && !file)) return;
-    setIsLoading(true);
-    isNearBottomRef.current = true;
-
-    let imagePreview = null;
-    if (file) {
-      if (file.size > 5 * 1024 * 1024) { alert("Файл слишком большой."); setIsLoading(false); return; }
-      imagePreview = await new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onload = (e) => resolve(e.target.result);
-        reader.readAsDataURL(file);
-      });
+    if (!textarea) {
+      return;
     }
 
-    let newMessages = [...allMessages];
-    const userMessage = { role: 'user', content: text || '', image: imagePreview, retryText: text, retryImage: imagePreview };
-    newMessages = [...newMessages, userMessage];
-    setAllMessages(newMessages);
-    setInput('');
+    textarea.style.height = 'auto';
 
-    const formData = new FormData();
-    if (text) formData.append('text', text);
-    if (file) formData.append('file', file);
+    textarea.style.height = `${Math.min(
+      textarea.scrollHeight,
+      140
+    )}px`;
+  }, [input]);
+
+  // ==========================================================
+  // Audio playback
+  // ==========================================================
+
+  function toggleAudio(src, messageId) {
+    if (!src) {
+      return;
+    }
+
+    // Current audio is playing -> stop it.
+    if (
+      playingAudio === messageId &&
+      audioRef.current
+    ) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+
+      audioRef.current = null;
+      setPlayingAudio(null);
+
+      return;
+    }
+
+    // Stop another audio.
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+      audioRef.current = null;
+    }
+
+    const audio = new Audio(src);
+
+    audioRef.current = audio;
+
+    audio.onended = () => {
+      setPlayingAudio(null);
+      audioRef.current = null;
+    };
+
+    audio.onerror = () => {
+      setPlayingAudio(null);
+      audioRef.current = null;
+    };
+
+    setPlayingAudio(messageId);
+
+    audio.play().catch(() => {
+      setPlayingAudio(null);
+      audioRef.current = null;
+    });
+  }
+
+  // ==========================================================
+  // Recording timer
+  // ==========================================================
+
+  function startRecordingTimer() {
+    setRecordingTime(0);
+
+    timerRef.current = setInterval(() => {
+      setRecordingTime((time) => time + 1);
+    }, 1000);
+  }
+
+  function stopRecordingTimer() {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  }
+
+  // ==========================================================
+  // Start recording
+  // ==========================================================
+
+  async function startRecording() {
+    if (isRecording || isLoading) {
+      return;
+    }
 
     try {
-      const response = await fetch(`${backendUrl}/api/message`, {
-        method: 'POST',
-        headers: { ...(sessionId ? { 'X-Session-Id': sessionId } : {}) },
-        body: formData
+      const stream =
+        await navigator.mediaDevices.getUserMedia({
+          audio: true,
+        });
+
+      const recorder = new MediaRecorder(stream);
+
+      mediaRecorderRef.current = recorder;
+      audioChunksRef.current = [];
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onstop = () => {
+        stream.getTracks().forEach((track) => {
+          track.stop();
+        });
+      };
+
+      recorder.start();
+
+      setIsRecording(true);
+      startRecordingTimer();
+    } catch (error) {
+      console.error('Microphone error:', error);
+
+      alert(
+        'Не удалось получить доступ к микрофону.'
+      );
+    }
+  }
+
+  // ==========================================================
+  // Cancel recording
+  // ==========================================================
+
+  function cancelRecording() {
+    const recorder = mediaRecorderRef.current;
+
+    if (recorder && recorder.state !== 'inactive') {
+      recorder.ondataavailable = null;
+      recorder.stop();
+    }
+
+    mediaRecorderRef.current = null;
+    audioChunksRef.current = [];
+
+    stopRecordingTimer();
+
+    setRecordingTime(0);
+    setIsRecording(false);
+  }
+
+  // ==========================================================
+  // Finish recording
+  // ==========================================================
+
+  function finishRecording() {
+    const recorder = mediaRecorderRef.current;
+
+    if (!recorder || recorder.state === 'inactive') {
+      return;
+    }
+
+    recorder.onstop = () => {
+      const stream = recorder.stream;
+
+      stream.getTracks().forEach((track) => {
+        track.stop();
       });
-      if (!response.ok) throw new Error('Network error');
+
+      const blob = new Blob(
+        audioChunksRef.current,
+        {
+          type: recorder.mimeType || 'audio/webm',
+        }
+      );
+
+      mediaRecorderRef.current = null;
+      audioChunksRef.current = [];
+
+      stopRecordingTimer();
+
+      setRecordingTime(0);
+      setIsRecording(false);
+
+      if (blob.size > 0) {
+        sendMessage('', blob);
+      }
+    };
+
+    recorder.stop();
+  }
+
+  // ==========================================================
+  // Send message
+  // ==========================================================
+
+  async function sendMessage(text = input, file = null) {
+    if (isLoading) {
+      return;
+    }
+
+    const trimmedText = text.trim();
+
+    if (!trimmedText && !file) {
+      return;
+    }
+
+    isNearBottomRef.current = true;
+
+    let messageType = 'text';
+
+    if (file) {
+      if (file.type.startsWith('image/')) {
+        messageType = 'image';
+      } else if (file.type.startsWith('audio/')) {
+        messageType = 'audio';
+      }
+    }
+
+    const localAudioUrl =
+      messageType === 'audio'
+        ? URL.createObjectURL(file)
+        : null;
+
+    const optimisticMessage = {
+      role: 'user',
+      content: trimmedText,
+      message_type: messageType,
+      image: null,
+      audio: localAudioUrl,
+      media_url: null,
+    };
+
+    setAllMessages((messages) => [
+      ...messages,
+      optimisticMessage,
+    ]);
+
+    setCurrentPage(1);
+
+    setInput('');
+    setIsLoading(true);
+
+    try {
+      const formData = new FormData();
+
+      if (trimmedText) {
+        formData.append('text', trimmedText);
+      }
+
+      if (file) {
+        formData.append('file', file);
+      }
+
+      if (sessionId) {
+        formData.append('session_id', sessionId);
+      }
+
+      const response = await fetch(
+        `${backendUrl}/api/message`,
+        {
+          method: 'POST',
+          body: formData,
+        }
+      );
+
+      if (!response.ok) {
+        const errorText = await response.text();
+
+        throw new Error(
+          errorText ||
+            `Request failed: ${response.status}`
+        );
+      }
+
       const data = await response.json();
 
-      if (data.session_id && data.session_id !== sessionId) {
+      // ------------------------------------------------------
+      // Save session ID
+      // ------------------------------------------------------
+
+      if (data.session_id) {
+        localStorage.setItem(
+          'translator_session_id',
+          data.session_id
+        );
+
         setSessionId(data.session_id);
-        localStorage.setItem('translator_session_id', data.session_id);
       }
 
-      if (data.media_url) {
-        await idbSet(data.media_url, imagePreview);
-        newMessages[newMessages.length - 1] = { ...newMessages[newMessages.length - 1], image: imagePreview, media_url: data.media_url, retryImage: null };
+      // ------------------------------------------------------
+      // Update optimistic user message
+      // ------------------------------------------------------
+
+      setAllMessages((messages) => {
+        const updated = [...messages];
+
+        const lastUserIndex =
+          [...updated]
+            .map((message, index) => ({
+              message,
+              index,
+            }))
+            .reverse()
+            .find(
+              ({ message }) =>
+                message.role === 'user'
+            )?.index;
+
+        if (
+          lastUserIndex !== undefined
+        ) {
+          const current =
+            updated[lastUserIndex];
+
+          if (messageType === 'audio') {
+            updated[lastUserIndex] = {
+              ...current,
+              content:
+                data.transcription || '',
+              media_url:
+                data.media_url || null,
+              audio:
+                data.media_url ||
+                current.audio ||
+                null,
+              message_type: 'audio',
+            };
+          } else if (
+            messageType === 'image'
+          ) {
+            updated[lastUserIndex] = {
+              ...current,
+              media_url:
+                data.media_url || null,
+              image:
+                data.media_url ||
+                current.image ||
+                null,
+              message_type: 'image',
+            };
+          }
+        }
+
+        return updated;
+      });
+
+      // ------------------------------------------------------
+      // Add assistant response
+      // ------------------------------------------------------
+
+      if (data.translation) {
+        setAllMessages((messages) => [
+          ...messages,
+          {
+            role: 'assistant',
+            content: data.translation,
+            message_type: 'text',
+            image: null,
+            audio: null,
+            media_url: null,
+          },
+        ]);
       }
 
-      setAllMessages([...newMessages, { role: 'assistant', content: data.translation }]);
+      // ------------------------------------------------------
+      // Cleanup local audio URL
+      // ------------------------------------------------------
+
+      if (localAudioUrl) {
+        setTimeout(() => {
+          URL.revokeObjectURL(localAudioUrl);
+        }, 5000);
+      }
     } catch (error) {
-      console.error('Ошибка отправки:', error);
-      setAllMessages([...newMessages, { role: 'assistant', content: 'Не удалось отправить. отправить ещё раз', isError: true, retryText: text, retryImage: imagePreview }]);
+      console.error('Send message error:', error);
+
+      setAllMessages((messages) => [
+        ...messages,
+        {
+          role: 'assistant',
+          content:
+            'Не удалось отправить сообщение. Попробуйте ещё раз.',
+          message_type: 'error',
+          image: null,
+          audio: null,
+          media_url: null,
+        },
+      ]);
     } finally {
       setIsLoading(false);
     }
-  };
+  }
 
-  const handleSend = async () => {
-    if (!input.trim() || isLoading) return;
-    await sendMessage(input, null);
-  };
+  // ==========================================================
+  // File selection
+  // ==========================================================
 
-  const handleKeyDown = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      if (!isLoading) handleSend();
+  function handleFileSelect(event) {
+    const file = event.target.files?.[0];
+
+    event.target.value = '';
+
+    if (!file) {
+      return;
     }
-  };
 
-  const handleRetry = async (idx) => {
-    const msg = visibleMessages[idx];
-    if (!msg) return;
-    let file = null;
-    if (msg.retryImage) {
-      const byteString = atob(msg.retryImage.split(',')[1]);
-      const mimeString = msg.retryImage.split(',')[0].split(':')[1].split(';')[0];
-      const ab = new ArrayBuffer(byteString.length);
-      const ia = new Uint8Array(ab);
-      for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
-      file = new Blob([ab], {type: mimeString});
+    const maxSize = 5 * 1024 * 1024;
+
+    if (file.size > maxSize) {
+      alert('Файл слишком большой. Максимальный размер — 5 МБ.');
+      return;
     }
-    await sendMessage(msg.retryText || null, file);
-  };
 
+    sendMessage('', file);
+  }
 
+  // ==========================================================
+  // Retry
+  // ==========================================================
 
-  const isEmpty = visibleMessages.length === 0 && !isLoading && !isSyncingHistory;
-  const isKeyboardOpen = bottomOffset > 10;
+  async function handleRetry(message) {
+    if (message.message_type === 'image') {
+      let blob = null;
 
-  const InputArea = (
-    <div
-      className={`input-area ${isEmpty ? 'input-centered' : ''}`}
-      style={!isEmpty ? {
-        bottom: `${bottomOffset}px`,
-        paddingBottom: isKeyboardOpen ? '10px' : 'calc(20px + env(safe-area-inset-bottom))' // Большой отступ, нет клавы
-      } : {}}
-    >
-      <input
-        type="file"
-        accept="image/*"
-        ref={fileInputRef}
-        style={{ display: 'none' }}
-        onChange={(e) => { const file = e.target.files[0]; if (file) sendMessage(null, file); e.target.value = null; }}
-      />
-      <button className="action-btn" onClick={() => fileInputRef.current.click()} disabled={isLoading} aria-label="Прикрепить фото">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>
-      </button>
-      <textarea
-        ref={textareaRef}
-        value={input}
-        onChange={(e) => setInput(e.target.value)}
-        onKeyDown={handleKeyDown}
-        placeholder="Сообщение..."
-        rows={1}
-      />
-      <div className="send-wrapper">
-        <button onClick={handleSend} disabled={!input.trim() || isLoading} className="send-btn" aria-label="Отправить">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
-        </button>
-      </div>
-    </div>
-  );
+      if (message.media_url) {
+        try {
+          const response = await fetch(
+            message.media_url
+          );
+
+          blob = await response.blob();
+        } catch (error) {
+          console.error(
+            'Failed to download image:',
+            error
+          );
+        }
+      }
+
+      if (blob) {
+        await sendMessage(
+          message.content || '',
+          blob
+        );
+      }
+    }
+  }
+
+  // ==========================================================
+  // Keyboard
+  // ==========================================================
+
+  function handleKeyDown(event) {
+    if (
+      event.key === 'Enter' &&
+      !event.shiftKey
+    ) {
+      event.preventDefault();
+
+      if (input.trim()) {
+        sendMessage();
+      }
+    }
+  }
+
+  // ==========================================================
+  // Render
+  // ==========================================================
 
   return (
-    <div
-      className={`app-container ${isEmpty ? 'empty-state-app' : 'chat-active-app'}`}
-      style={isEmpty ? { height: `${viewportHeight}px` } : {}}
-    >
+    <div className="app">
+      <main
+        ref={chatContainerRef}
+        className="chat-container"
+      >
+        {visibleMessages.length === 0 && (
+          <Typewriter texts={WELCOME_MESSAGES} />
+        )}
 
-      {visibleMessages.length > 0 && <div className="status-bar-shadow"></div>}
+        {isLoadingMore && (
+          <div className="loading-more">
+            Загрузка...
+          </div>
+        )}
 
-      {!isAppInstalled && deferredPrompt && (
-        <button className="login-btn" onClick={handleInstallClick}>
-          <span>Установить</span>
-        </button>
-      )}
+        {visibleMessages.map((msg, index) => {
+          const imageSrc =
+            msg.image ||
+            (
+              msg.message_type === 'image'
+                ? msg.media_url
+                : null
+            );
 
-      {visibleMessages.length > 0 ? (
-        <div className="chat-container" ref={chatContainerRef}>
-          {isLoadingMore && (
-            <div className="message-wrapper assistant">
-              <div className="message assistant typing"><span></span><span></span><span></span></div>
-            </div>
-          )}
+          const audioSrc =
+            msg.audio ||
+            (
+              msg.message_type === 'audio'
+                ? msg.media_url
+                : null
+            );
 
-          {visibleMessages.map((msg, idx) => {
-            const rotations = ['-2deg', '1.5deg', '-1deg', '2deg'];
-            const rotation = rotations[idx % 4];
-            const imageSrc = msg.image || msg.media_url;
+          const audioId =
+            `${index}-${msg.role}-${msg.message_type}`;
 
-            return (
-              <div key={idx} className={`message-wrapper ${msg.role}`}>
-                {imageSrc && (
-                  <div className="polaroid" style={{ transform: `rotate(${rotation})` }} onClick={() => setLightboxSrc(imageSrc)}>
-                    <img src={imageSrc} alt="Upload" />
+          return (
+            <div
+              key={`${index}-${msg.role}-${msg.message_type}`}
+              className={`message-row ${
+                msg.role === 'user'
+                  ? 'message-row-user'
+                  : 'message-row-assistant'
+              }`}
+            >
+              {msg.message_type === 'image' &&
+                imageSrc && (
+                  <div className="image-message">
+                    <img
+                      src={imageSrc}
+                      alt="Uploaded"
+                      onClick={() =>
+                        setLightboxSrc(imageSrc)
+                      }
+                    />
+
+                    {msg.content && (
+                      <div className="image-caption">
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm]}
+                        >
+                          {msg.content}
+                        </ReactMarkdown>
+                      </div>
+                    )}
                   </div>
                 )}
-                {msg.content && (
-                  <div className={`message ${msg.role} ${msg.isError ? 'error-message' : ''}`}>
-                    <div className="markdown-content">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
-                      {msg.isError && (
-                        <span className="retry-link" onClick={() => handleRetry(idx)}>отправить ещё раз</span>
+
+              {msg.message_type === 'audio' &&
+                audioSrc && (
+                  <div
+                    className={`audio-message ${
+                      msg.role === 'user'
+                        ? 'audio-message-user'
+                        : 'audio-message-assistant'
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      className="audio-play-btn"
+                      onClick={() =>
+                        toggleAudio(
+                          audioSrc,
+                          audioId
+                        )
+                      }
+                      aria-label={
+                        playingAudio === audioId
+                          ? 'Остановить аудио'
+                          : 'Воспроизвести аудио'
+                      }
+                    >
+                      {playingAudio === audioId ? (
+                        <PauseIcon />
+                      ) : (
+                        <PlayIcon />
+                      )}
+                    </button>
+
+                    <div className="audio-message-content">
+                      {msg.content && (
+                        <div className="audio-transcription">
+                          <ReactMarkdown
+                            remarkPlugins={[
+                              remarkGfm,
+                            ]}
+                          >
+                            {msg.content}
+                          </ReactMarkdown>
+                        </div>
                       )}
                     </div>
                   </div>
                 )}
-              </div>
-            );
-          })}
 
-          {isSyncingHistory && (
-            <div className="message-wrapper assistant">
-              <div className="typing-dots">
-                <span></span><span></span><span></span>
-              </div>
+              {msg.message_type !== 'image' &&
+                msg.message_type !== 'audio' &&
+                msg.content && (
+                  <div
+                    className={`message-bubble ${
+                      msg.role === 'user'
+                        ? 'message-user'
+                        : 'message-assistant'
+                    } ${
+                      msg.message_type === 'error'
+                        ? 'message-error'
+                        : ''
+                    }`}
+                  >
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                    >
+                      {msg.content}
+                    </ReactMarkdown>
+                  </div>
+                )}
             </div>
+          );
+        })}
+
+        {isLoading && (
+          <div className="message-row message-row-assistant">
+            <div className="message-bubble message-assistant typing-bubble">
+              <span />
+              <span />
+              <span />
+            </div>
+          </div>
+        )}
+      </main>
+
+      {/* ====================================================
+          Input
+          ==================================================== */}
+
+      <div className="input-area">
+        <div className="input-container">
+          {!isRecording && (
+            <>
+              <button
+                type="button"
+                className="icon-button attachment-button"
+                onClick={() =>
+                  fileInputRef.current?.click()
+                }
+                disabled={isLoading}
+                aria-label="Прикрепить файл"
+              >
+                <AttachmentIcon />
+              </button>
+
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*,audio/*,.m4a,.mp4"
+                hidden
+                onChange={handleFileSelect}
+              />
+
+              <textarea
+                ref={textareaRef}
+                value={input}
+                onChange={(event) =>
+                  setInput(event.target.value)
+                }
+                onKeyDown={handleKeyDown}
+                placeholder="Сообщение..."
+                rows={1}
+                disabled={isLoading}
+              />
+
+              {input.trim() ? (
+                <button
+                  type="button"
+                  className="icon-button send-button"
+                  onClick={() => sendMessage()}
+                  disabled={isLoading}
+                  aria-label="Отправить"
+                >
+                  <SendIcon />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="icon-button mic-button"
+                  onClick={startRecording}
+                  disabled={isLoading}
+                  aria-label="Записать аудио"
+                >
+                  <MicIcon />
+                </button>
+              )}
+            </>
           )}
 
-          {isLoading && (
-            <div className="message-wrapper assistant">
-              <div className="typing-dots">
-                <span></span><span></span><span></span>
+          {isRecording && (
+            <div className="recording-container">
+              <button
+                type="button"
+                className="recording-action recording-cancel"
+                onClick={cancelRecording}
+                aria-label="Отменить запись"
+              >
+                <CloseIcon />
+              </button>
+
+              <div className="recording-info">
+                <div className="recording-dot" />
+
+                <span className="recording-time">
+                  {formatRecordingTime(recordingTime)}
+                </span>
+
+                <span className="recording-label">
+                  Запись...
+                </span>
               </div>
+
+              <button
+                type="button"
+                className="recording-action recording-send"
+                onClick={finishRecording}
+                aria-label="Отправить аудио"
+              >
+                <CheckIcon />
+              </button>
             </div>
           )}
         </div>
-      ) : (
-        <div className="empty-wrapper">
-          <Typewriter />
-          {InputArea}
-        </div>
-      )}
+      </div>
 
-      {/* InputArea вынесен из chat-container, чтобы избежать двойных отступов */}
-      {!isEmpty && InputArea}
-
+      {/* ====================================================
+          Image lightbox
+          ==================================================== */}
 
       {lightboxSrc && (
-        <div className="lightbox" onClick={() => setLightboxSrc(null)}>
-          <img src={lightboxSrc} alt="Fullscreen" />
+        <div
+          className="lightbox"
+          onClick={() => setLightboxSrc(null)}
+        >
+          <button
+            type="button"
+            className="lightbox-close"
+            onClick={() => setLightboxSrc(null)}
+            aria-label="Закрыть"
+          >
+            <CloseIcon />
+          </button>
+
+          <img
+            src={lightboxSrc}
+            alt="Preview"
+            onClick={(event) =>
+              event.stopPropagation()
+            }
+          />
         </div>
       )}
     </div>
   );
 }
-
-export default App;

@@ -1,131 +1,754 @@
+/* ============================================================
+   Reset
+   ============================================================ */
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  min-height: 100%;
+  background: #f7f7f8;
+}
+
+body {
+  min-height: 100%;
+  margin: 0;
+  font-family:
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    Helvetica,
+    Arial,
+    sans-serif;
+  background: #f7f7f8;
+  color: #222;
+}
+
+button,
+textarea {
+  font: inherit;
+}
+
+/* ============================================================
+   Variables
+   ============================================================ */
+
 :root {
-  --bg-color: #ffffff;
-  --text-color: #1d1d1f;
-  --user-bubble: #f1f1f1;
-  --border-color: #e5e5e5;
-  --accent-color: #007aff;
-  --icon-btn-bg: #f1f1f1;
-  --icon-btn-color: #333333;
+  --accent-color: #222;
+  --user-bubble: #e9e9eb;
+  --assistant-bubble: #ffffff;
+  --border-color: #e3e3e5;
+  --text-color: #222;
+  --secondary-text: #777;
 }
 
-* { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+/* ============================================================
+   App
+   ============================================================ */
 
-html, body {
-  background-color: #ffffff; /* Фикс мерцания темного фона при восстановлении PWA */
-}
-
-@media (max-width: 768px) {
-  body::-webkit-scrollbar { display: none; }
-  html { scrollbar-width: none; }
-}
-body::-webkit-scrollbar { width: 8px; }
-body::-webkit-scrollbar-track { background: transparent; }
-body::-webkit-scrollbar-thumb { background-color: #cccccc; border-radius: 4px; }
-
-.app-container { position: relative; display: flex; flex-direction: column; min-height: 100dvh; max-width: 768px; margin: 0 auto; background-color: var(--bg-color); overflow: hidden; }
-.empty-state-app { height: 100dvh; }
-
-.status-bar-shadow {
-  position: fixed;
-  top: -20px;
-  left: 0;
+.app {
+  min-height: 100vh;
   width: 100%;
-  height: 20px;
-  z-index: 5;
-  pointer-events: none;
-  box-shadow: 0 8px 25px -5px rgba(0, 0, 0, 0.40);
-
+  background: #f7f7f8;
 }
 
-.login-btn {
-  position: fixed; top: calc(15px + env(safe-area-inset-top)); right: 15px; z-index: 100;
-  background-color: #333333; color: #ffffff; border: none; padding: 8px 16px; border-radius: 20px;
-  display: flex; justify-content: center; align-items: center; gap: 8px; font-size: 14px; font-weight: 500; cursor: pointer;
-}
-
-/* Стартовый экран (Empty State) */
-/* Стартовый экран (Empty State) */
-.empty-wrapper {
-  flex: 1; /* Заставляет обертку занимать всё свободное место, чтобы центрировать контент */
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  height: 100%;
-  padding-bottom: env(safe-area-inset-bottom);
-}
+/* ============================================================
+   Chat
+   ============================================================ */
 
 .chat-container {
-  padding-top: calc(15px + env(safe-area-inset-top));
-  padding-bottom: calc(120px + env(safe-area-inset-bottom));
-  padding-left: 1rem; padding-right: 1rem;
-  display: flex; flex-direction: column; width: 100%;
-  height: 100%;
-}
+  width: 100%;
+  max-width: 900px;
+  margin: 0 auto;
 
-.message-wrapper { display: flex; flex-direction: column; margin-bottom: 1.5rem; width: 100%; }
-.message-wrapper.user { align-items: flex-end; }
-.message-wrapper.assistant { align-items: flex-start; }
+  padding: 32px 20px 130px;
 
-.message.user { max-width: 85%; padding: 1.2rem 1.5rem; background-color: var(--user-bubble); color: var(--text-color); border-radius: 22px; border-bottom-right-radius: 6px; word-wrap: break-word; white-space: pre-wrap; line-height: 1.5; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
-.message.assistant { max-width: 100%; color: var(--text-color); word-wrap: break-word; white-space: pre-wrap; line-height: 1.6; }
-.message.typing { display: flex; gap: 4px; align-items: center; padding: 10px 15px; background: var(--user-bubble); border-radius: 18px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); max-width: 60px; }
-.message.typing span { width: 8px; height: 8px; background: #999; border-radius: 50%; animation: bounce 1s infinite ease-in-out; }
-.message.typing span:nth-child(2) { animation-delay: 0.2s; }
-.message.typing span:nth-child(3) { animation-delay: 0.4s; }
-@keyframes bounce { 0%, 80%, 100% { transform: translateY(0); } 40% { transform: translateY(-8px); } }
-
-.message.error-message { background-color: #fff0f0; color: #d32f2f; border: 1px solid #ffcdd2; border-radius: 18px; padding: 1rem 1.25rem; display: flex; flex-direction: column; align-items: flex-start; gap: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); max-width: 85%; }
-.retry-link { background: none; border: none; color: #d32f2f; text-decoration: underline; cursor: pointer; font-size: 0.9rem; padding: 0; font-family: inherit; }
-
-.polaroid { background-color: #fff; padding: 10px 10px 30px 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.15); max-width: 220px; margin-bottom: 12px; align-self: flex-end; transition: transform 0.3s ease; cursor: pointer; }
-.polaroid img { width: 100%; height: auto; display: block; object-fit: contain; }
-.polaroid:hover { transform: rotate(0deg) scale(1.02) !important; }
-
-.lightbox { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 200; display: flex; justify-content: center; align-items: center; cursor: pointer; }
-.lightbox img { max-width: 95%; max-height: 95%; object-fit: contain; border-radius: 8px; }
-
-
-/* Input Area */
-/* Input Area */
-.input-area {
-  display: flex; gap: 10px; padding: 1rem;
-  background-color: transparent; width: 100%; z-index: 20; align-items: flex-end;
-  position: fixed; bottom: 0; left: 0; right: 0; margin: 0 auto; max-width: 768px; /* Надежное центрирование fixed элемента */
-  transition: bottom 0.2s ease;
-}
-
-/* В стартовом состоянии инпут relative, чтобы центрироваться вместе с подсказкой */
-.input-area.input-centered {
-  position: relative; bottom: auto;
-  margin: 20px auto 0 auto; width: 100%; max-width: 600px;
-}
-
-.input-area textarea { flex: 1; padding: 0.85rem 1.25rem; border: 1px solid var(--border-color); border-radius: 24px; resize: none; outline: none; max-height: 120px; font-size: 1rem; line-height: 1.4; min-height: 48px; background-color: var(--bg-color); box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
-.action-btn, .send-btn { display: flex; justify-content: center; align-items: center; width: 48px; height: 48px; min-width: 48px; padding: 0; border: none; border-radius: 50%; cursor: pointer; flex-shrink: 0; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
-.action-btn { background-color: var(--icon-btn-bg); color: var(--icon-btn-color); }
-.send-btn { background-color: var(--accent-color); color: #fff; }
-.action-btn:active, .send-btn:active { transform: scale(0.95); }
-.send-btn:disabled { background-color: #b0d4ff; cursor: not-allowed; }
-
-.empty-state { text-align: center; color: #999; margin: 0 auto 2rem; padding: 0 1.5rem; font-size: 1rem; max-width: 400px; }
-.typewriter { font-size: 1rem; color: #999; text-align: center; min-height: 20px; }
-.cursor { animation: blink 1s infinite; color: #007aff; }
-@keyframes blink { 0%, 50% { opacity: 1; } 51%, 100% { opacity: 0; } }
-
-.markdown-content { line-height: 1.6; word-wrap: break-word; }
-.markdown-content p { margin-bottom: 0.5rem; }
-.markdown-content strong { font-weight: 600; }
-
-/* Индикатор загрузки без баббла */
-.typing-dots {
   display: flex;
-  gap: 4px;
+  flex-direction: column;
+}
+
+/* ============================================================
+   Welcome
+   ============================================================ */
+
+.welcome-message {
+  min-height: 70vh;
+
+  display: flex;
   align-items: center;
-  padding-top: 10px;
+  justify-content: center;
+
+  text-align: center;
+
+  color: #888;
+
+  font-size: 18px;
+  line-height: 1.5;
+
+  padding: 30px;
 }
-.typing-dots span {
-  width: 8px; height: 8px; background: #999; border-radius: 50%; animation: bounce 1s infinite ease-in-out;
+
+.typewriter-cursor {
+  margin-left: 2px;
+  animation: blink 1s infinite;
 }
-.typing-dots span:nth-child(2) { animation-delay: 0.2s; }
-.typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes blink {
+  0%,
+  50% {
+    opacity: 1;
+  }
+
+  51%,
+  100% {
+    opacity: 0;
+  }
+}
+
+/* ============================================================
+   Loading
+   ============================================================ */
+
+.loading-more {
+  text-align: center;
+  color: #888;
+  font-size: 13px;
+  padding: 10px 0 20px;
+}
+
+/* ============================================================
+   Message rows
+   ============================================================ */
+
+.message-row {
+  width: 100%;
+
+  display: flex;
+
+  margin-bottom: 12px;
+}
+
+.message-row-user {
+  justify-content: flex-end;
+}
+
+.message-row-assistant {
+  justify-content: flex-start;
+}
+
+/* ============================================================
+   Text bubbles
+   ============================================================ */
+
+.message-bubble {
+  max-width: min(78%, 700px);
+
+  padding: 11px 15px;
+
+  border-radius: 20px;
+
+  line-height: 1.5;
+
+  word-break: break-word;
+
+  font-size: 15px;
+}
+
+.message-user {
+  background: var(--user-bubble);
+
+  color: var(--text-color);
+
+  border-bottom-right-radius: 6px;
+}
+
+.message-assistant {
+  background: var(--assistant-bubble);
+
+  color: var(--text-color);
+
+  border: 1px solid var(--border-color);
+
+  border-bottom-left-radius: 6px;
+}
+
+.message-error {
+  color: #b42318;
+  border-color: #f0c4c0;
+}
+
+/* Markdown */
+
+.message-bubble p {
+  margin: 0 0 8px;
+}
+
+.message-bubble p:last-child {
+  margin-bottom: 0;
+}
+
+.message-bubble ul,
+.message-bubble ol {
+  padding-left: 20px;
+  margin: 8px 0;
+}
+
+.message-bubble li {
+  margin-bottom: 4px;
+}
+
+.message-bubble code {
+  background: #f0f0f1;
+  border-radius: 5px;
+  padding: 2px 5px;
+  font-size: 0.9em;
+}
+
+.message-bubble pre {
+  overflow-x: auto;
+  margin: 10px 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: #f1f1f2;
+}
+
+.message-bubble pre code {
+  background: transparent;
+  padding: 0;
+}
+
+/* ============================================================
+   Typing indicator
+   ============================================================ */
+
+.typing-bubble {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+
+  min-width: 55px;
+  padding: 13px 15px;
+}
+
+.typing-bubble span {
+  width: 6px;
+  height: 6px;
+
+  border-radius: 50%;
+
+  background: #888;
+
+  animation: typing 1.3s infinite ease-in-out;
+}
+
+.typing-bubble span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.typing-bubble span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes typing {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.45;
+  }
+
+  30% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+
+/* ============================================================
+   Image messages
+   ============================================================ */
+
+.image-message {
+  max-width: min(78%, 500px);
+
+  overflow: hidden;
+
+  border-radius: 20px;
+
+  background: #fff;
+
+  border: 1px solid var(--border-color);
+
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.image-message img {
+  display: block;
+
+  width: 100%;
+  max-height: 500px;
+
+  object-fit: contain;
+
+  cursor: pointer;
+}
+
+.image-caption {
+  padding: 10px 14px;
+
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.image-caption p {
+  margin: 0;
+}
+
+/* ============================================================
+   AUDIO MESSAGE
+   ============================================================ */
+
+.audio-message {
+  display: flex;
+  align-items: center;
+
+  gap: 12px;
+
+  max-width: min(78%, 700px);
+
+  padding: 9px 13px;
+
+  border-radius: 22px;
+
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.08);
+
+  min-width: 180px;
+}
+
+.audio-message-user {
+  background: var(--user-bubble);
+
+  color: var(--text-color);
+
+  border-bottom-right-radius: 6px;
+}
+
+.audio-message-assistant {
+  background: var(--assistant-bubble);
+
+  color: var(--text-color);
+
+  border: 1px solid var(--border-color);
+
+  border-bottom-left-radius: 6px;
+}
+
+/* ============================================================
+   Audio play button
+   ============================================================ */
+
+.audio-play-btn {
+  width: 40px;
+  height: 40px;
+
+  min-width: 40px;
+
+  border: none;
+  border-radius: 50%;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  padding: 0;
+
+  cursor: pointer;
+
+  background: var(--accent-color);
+  color: #fff;
+
+  transition:
+    transform 0.15s ease,
+    opacity 0.15s ease;
+}
+
+.audio-play-btn:hover {
+  opacity: 0.85;
+}
+
+.audio-play-btn:active {
+  transform: scale(0.92);
+}
+
+/* ============================================================
+   Audio text
+   ============================================================ */
+
+.audio-message-content {
+  min-width: 0;
+  flex: 1;
+}
+
+.audio-transcription {
+  color: var(--text-color);
+
+  font-size: 15px;
+
+  line-height: 1.45;
+
+  word-break: break-word;
+}
+
+.audio-transcription p {
+  margin: 0;
+}
+
+.audio-transcription p:last-child {
+  margin-bottom: 0;
+}
+
+/* ============================================================
+   Input area
+   ============================================================ */
+
+.input-area {
+  position: fixed;
+
+  left: 0;
+  right: 0;
+  bottom: 0;
+
+  z-index: 100;
+
+  padding: 12px 16px 18px;
+
+  background: linear-gradient(
+    to bottom,
+    rgba(247, 247, 248, 0),
+    rgba(247, 247, 248, 0.95) 25%,
+    rgba(247, 247, 248, 1) 60%
+  );
+}
+
+.input-container {
+  width: 100%;
+  max-width: 900px;
+
+  margin: 0 auto;
+
+  min-height: 56px;
+
+  display: flex;
+  align-items: flex-end;
+
+  gap: 8px;
+
+  padding: 8px 10px;
+
+  background: #fff;
+
+  border: 1px solid #ddd;
+
+  border-radius: 28px;
+
+  box-shadow:
+    0 4px 20px rgba(0, 0, 0, 0.08);
+}
+
+/* ============================================================
+   Textarea
+   ============================================================ */
+
+.input-container textarea {
+  flex: 1;
+
+  width: 100%;
+
+  min-height: 38px;
+  max-height: 140px;
+
+  resize: none;
+
+  border: none;
+  outline: none;
+
+  background: transparent;
+
+  color: var(--text-color);
+
+  font-size: 16px;
+
+  line-height: 1.45;
+
+  padding: 8px 2px;
+
+  overflow-y: auto;
+}
+
+.input-container textarea::placeholder {
+  color: #999;
+}
+
+/* ============================================================
+   Icon buttons
+   ============================================================ */
+
+.icon-button {
+  width: 40px;
+  height: 40px;
+
+  min-width: 40px;
+
+  border: none;
+  border-radius: 50%;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  padding: 0;
+
+  cursor: pointer;
+
+  transition:
+    background-color 0.15s ease,
+    transform 0.15s ease,
+    opacity 0.15s ease;
+}
+
+.icon-button:active {
+  transform: scale(0.92);
+}
+
+.icon-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.attachment-button {
+  color: #666;
+
+  background: transparent;
+}
+
+.attachment-button:hover:not(:disabled) {
+  background: #f1f1f2;
+}
+
+.mic-button,
+.send-button {
+  color: #fff;
+
+  background: var(--accent-color);
+}
+
+.mic-button:hover:not(:disabled),
+.send-button:hover:not(:disabled) {
+  opacity: 0.85;
+}
+
+/* ============================================================
+   Recording
+   ============================================================ */
+
+.recording-container {
+  width: 100%;
+
+  min-height: 40px;
+
+  display: flex;
+  align-items: center;
+
+  gap: 10px;
+}
+
+.recording-action {
+  width: 40px;
+  height: 40px;
+
+  min-width: 40px;
+
+  border: none;
+  border-radius: 50%;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  cursor: pointer;
+
+  padding: 0;
+}
+
+.recording-cancel {
+  background: #f0f0f1;
+  color: #555;
+}
+
+.recording-send {
+  background: var(--accent-color);
+  color: #fff;
+}
+
+.recording-action:active {
+  transform: scale(0.92);
+}
+
+.recording-info {
+  flex: 1;
+
+  display: flex;
+  align-items: center;
+
+  gap: 9px;
+
+  padding: 0 6px;
+}
+
+.recording-dot {
+  width: 9px;
+  height: 9px;
+
+  border-radius: 50%;
+
+  background: #e53935;
+
+  animation: recording-pulse 1s infinite;
+}
+
+@keyframes recording-pulse {
+  0% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.35;
+  }
+
+  100% {
+    opacity: 1;
+  }
+}
+
+.recording-time {
+  font-variant-numeric: tabular-nums;
+
+  font-size: 15px;
+
+  color: #333;
+}
+
+.recording-label {
+  color: #999;
+
+  font-size: 14px;
+}
+
+/* ============================================================
+   Lightbox
+   ============================================================ */
+
+.lightbox {
+  position: fixed;
+
+  inset: 0;
+
+  z-index: 1000;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  padding: 30px;
+
+  background: rgba(0, 0, 0, 0.8);
+
+  cursor: zoom-out;
+}
+
+.lightbox img {
+  max-width: 95vw;
+  max-height: 90vh;
+
+  object-fit: contain;
+
+  border-radius: 8px;
+
+  cursor: default;
+}
+
+.lightbox-close {
+  position: absolute;
+
+  top: 18px;
+  right: 18px;
+
+  width: 42px;
+  height: 42px;
+
+  border: none;
+  border-radius: 50%;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  background: rgba(255, 255, 255, 0.15);
+
+  color: #fff;
+
+  cursor: pointer;
+}
+
+.lightbox-close:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+/* ============================================================
+   Mobile
+   ============================================================ */
+
+@media (max-width: 600px) {
+  .chat-container {
+    padding-left: 12px;
+    padding-right: 12px;
+    padding-top: 20px;
+    padding-bottom: 120px;
+  }
+
+  .message-bubble,
+  .audio-message,
+  .image-message {
+    max-width: 88%;
+  }
+
+  .input-area {
+    padding-left: 8px;
+    padding-right: 8px;
+    padding-bottom: 10px;
+  }
+
+  .input-container {
+    min-height: 54px;
+  }
+
+  .audio-message {
+    gap: 10px;
+    padding: 8px 11px;
+  }
+
+  .audio-play-btn {
+    width: 38px;
+    height: 38px;
+    min-width: 38px;
+  }
+
+  .welcome-message {
+    min-height: 65vh;
+    font-size: 16px;
+    padding: 20px;
+  }
+}
