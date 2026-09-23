@@ -745,8 +745,10 @@ export default function App() {
       }
     }
 
-    const localAudioUrl =
-      messageType === 'audio'
+    // Локальный URL нужен, чтобы фото/аудио появилось
+    // сразу, не дожидаясь ответа backend.
+    const localMediaUrl =
+      file
         ? URL.createObjectURL(file)
         : null;
 
@@ -754,17 +756,31 @@ export default function App() {
       role: 'user',
       content: trimmedText,
       message_type: messageType,
-      image: null,
-      audio: localAudioUrl,
+      image:
+        messageType === 'image'
+          ? localMediaUrl
+          : null,
+      audio:
+        messageType === 'audio'
+          ? localMediaUrl
+          : null,
       media_url: null,
     };
 
-    setAllMessages((messages) => [
-      ...messages,
+    // Сразу добавляем сообщение в полный список.
+    const optimisticMessages = [
+      ...allMessages,
       optimisticMessage,
-    ]);
+    ];
 
+    setAllMessages(optimisticMessages);
+
+    // Сразу обновляем видимые сообщения.
+    // Не ждём useEffect после setAllMessages.
     setCurrentPage(1);
+    setVisibleMessages(
+      optimisticMessages.slice(-PAGE_SIZE)
+    );
 
     setInput('');
     setIsLoading(true);
@@ -817,7 +833,7 @@ export default function App() {
       }
 
       // ------------------------------------------------------
-      // Update optimistic user message
+      // Update user message + add assistant response
       // ------------------------------------------------------
 
       setAllMessages((messages) => {
@@ -870,51 +886,69 @@ export default function App() {
           }
         }
 
-        return updated;
-      });
-
-      // ------------------------------------------------------
-      // Add assistant response
-      // ------------------------------------------------------
-
-      if (data.translation) {
-        setAllMessages((messages) => [
-          ...messages,
-          {
+        // Add assistant response.
+        if (data.translation) {
+          updated.push({
             role: 'assistant',
             content: data.translation,
             message_type: 'text',
             image: null,
             audio: null,
             media_url: null,
-          },
-        ]);
-      }
+          });
+        }
 
-      // ------------------------------------------------------
-      // Cleanup local audio URL
-      // ------------------------------------------------------
+        // Сразу синхронизируем visibleMessages.
+        setVisibleMessages(
+          updated.slice(-PAGE_SIZE)
+        );
 
-      if (localAudioUrl) {
+        return updated;
+      });
+
+      // Локальный URL больше не нужен после того,
+      // как backend вернул постоянный media_url.
+      if (
+        localMediaUrl &&
+        data.media_url
+      ) {
         setTimeout(() => {
-          URL.revokeObjectURL(localAudioUrl);
-        }, 5000);
+          URL.revokeObjectURL(localMediaUrl);
+        }, 100);
       }
     } catch (error) {
-      console.error('Send message error:', error);
+      console.error(
+        'Send message error:',
+        error
+      );
 
-      setAllMessages((messages) => [
-        ...messages,
-        {
-          role: 'assistant',
-          content:
-            'Не удалось отправить сообщение. Попробуйте ещё раз.',
-          message_type: 'error',
-          image: null,
-          audio: null,
-          media_url: null,
-        },
-      ]);
+      // При ошибке оставляем уже показанное
+      // пользовательское сообщение в чате.
+      setAllMessages((messages) => {
+        const updated = [
+          ...messages,
+          {
+            role: 'assistant',
+            content:
+              'Не удалось отправить сообщение. Попробуйте ещё раз.',
+            message_type: 'error',
+            image: null,
+            audio: null,
+            media_url: null,
+          },
+        ];
+
+        setVisibleMessages(
+          updated.slice(-PAGE_SIZE)
+        );
+
+        return updated;
+      });
+
+      // ВАЖНО:
+      // localMediaUrl здесь не удаляем.
+      // Поэтому фотография пользователя останется
+      // видимой даже при ошибке отправки.
     } finally {
       setIsLoading(false);
     }
