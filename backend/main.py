@@ -46,7 +46,7 @@ app.add_middleware(
 )
 
 
-DEFAULT_LANGUAGE = "Chinese"
+DEFAULT_LANGUAGE = "Spanish (Argentina)"
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
@@ -1134,7 +1134,7 @@ async def process_message(
             {
                 "role": "assistant",
                 "content": (
-                    "Какой у вас уровень китайского?"
+                    "Какой у вас уровень испанского?"
                 ),
             }
         ]
