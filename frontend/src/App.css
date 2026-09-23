@@ -23,7 +23,7 @@ body::-webkit-scrollbar-track { background: transparent; }
 body::-webkit-scrollbar-thumb { background-color: #cccccc; border-radius: 4px; }
 
 .app-container { position: relative; display: flex; flex-direction: column; min-height: 100dvh; max-width: 768px; margin: 0 auto; background-color: var(--bg-color); overflow: hidden; }
-.empty-state-app { height: 100dvh; min-height: 0; }
+.empty-state-app { height: 100dvh; }
 
 .status-bar-shadow {
   position: fixed;

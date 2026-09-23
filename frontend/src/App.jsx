@@ -359,7 +359,7 @@ function App() {
   return (
     <div
       className={`app-container ${isEmpty ? 'empty-state-app' : 'chat-active-app'}`}
-      style={isEmpty ? { height: `${viewportHeight}px`, minHeight: '0px' } : {}}
+      style={isEmpty ? { height: `${viewportHeight}px` } : {}}
     >
 
       {visibleMessages.length > 0 && <div className="status-bar-shadow"></div>}
