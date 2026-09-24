@@ -4,6 +4,7 @@ import json
 import base64
 import ssl
 import io
+import asyncio
 from typing import Optional
 
 from fastapi import (
@@ -211,7 +212,7 @@ async def save_message(
     msg_type="text",
     media_url=None,
 ):
-    await conn.execute(
+    user_message_id = await conn.fetchval(
         """
         INSERT INTO chat_history
         (
@@ -222,6 +223,7 @@ async def save_message(
             media_url
         )
         VALUES ($1, $2, $3, $4, $5)
+        RETURNING id
         """,
         session_id,
         "user",
@@ -248,6 +250,87 @@ async def save_message(
         "text",
         None,
     )
+
+    return user_message_id
+
+
+async def update_message_media_url(
+    message_id: int,
+    media_url: str,
+):
+    """
+    Обновляет media_url уже после загрузки
+    файла в Supabase.
+    """
+
+    if not db_pool:
+        return
+
+    try:
+
+        async with db_pool.acquire() as conn:
+
+            await conn.execute(
+                """
+                UPDATE chat_history
+                SET media_url = $1
+                WHERE id = $2
+                """,
+                media_url,
+                message_id,
+            )
+
+        print(
+            f"media_url updated for message "
+            f"{message_id}"
+        )
+
+    except Exception as e:
+
+        print(
+            f"Failed to update media_url "
+            f"for message {message_id}: {e}"
+        )
+
+
+async def upload_image_and_update_history(
+    image_bytes: bytes,
+    message_id: int,
+):
+    """
+    Фоновая задача:
+
+    1. Загружает изображение в Supabase.
+    2. Получает media_url.
+    3. Записывает media_url в chat_history.
+
+    Эта задача НЕ блокирует ответ OpenRouter.
+    """
+
+    try:
+
+        media_url = await upload_to_supabase(
+            image_bytes,
+            "image/jpeg",
+            "jpg",
+        )
+
+        await update_message_media_url(
+            message_id,
+            media_url,
+        )
+
+        print(
+            f"Background image upload completed "
+            f"for message {message_id}"
+        )
+
+    except Exception as e:
+
+        print(
+            f"Background image upload failed "
+            f"for message {message_id}: {e}"
+        )
 
 
 async def get_user_language(
@@ -623,10 +706,6 @@ async def refresh_chat_memory(
                 )
             )
 
-        # ----------------------------------------------------
-        # Новый важный факт
-        # ----------------------------------------------------
-
         if memory_updates:
 
             await update_summary_from_memory_updates(
@@ -636,10 +715,6 @@ async def refresh_chat_memory(
             )
 
             return
-
-        # ----------------------------------------------------
-        # Периодическая защита от накопления ошибок
-        # ----------------------------------------------------
 
         messages_since_summary = (
             total_message_count
@@ -751,9 +826,15 @@ async def call_openrouter(
 
         parsed = json.loads(raw_text)
 
-        print("\n========== PARSED TRANSLATION ==========")
-        print(repr(parsed.get("translation")))
-        print("========================================\n")
+        print(
+            "\n========== PARSED TRANSLATION =========="
+        )
+        print(
+            repr(parsed.get("translation"))
+        )
+        print(
+            "========================================\n"
+        )
 
     except json.JSONDecodeError:
 
@@ -823,12 +904,8 @@ async def upload_to_supabase(
             f"{resp.text}"
         )
 
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Failed to upload to "
-                "Supabase Storage"
-            ),
+        raise Exception(
+            "Failed to upload to Supabase Storage"
         )
 
     return (
@@ -1099,10 +1176,6 @@ async def process_message(
         session_id
     )
 
-    # --------------------------------------------------------
-    # Получаем summary + последние сообщения
-    # --------------------------------------------------------
-
     async with db_pool.acquire() as conn:
 
         history_rows = await get_recent_history(
@@ -1124,10 +1197,6 @@ async def process_message(
         for row in history_rows
     ]
 
-    # --------------------------------------------------------
-    # Первый вопрос
-    # --------------------------------------------------------
-
     if not history_messages:
 
         history_messages = [
@@ -1138,10 +1207,6 @@ async def process_message(
                 ),
             }
         ]
-
-    # --------------------------------------------------------
-    # Основной запрос к AI
-    # --------------------------------------------------------
 
     messages = [
         {
@@ -1178,13 +1243,9 @@ async def process_message(
         result.get("memory_updates")
     )
 
-    # --------------------------------------------------------
-    # Сохраняем основную историю
-    # --------------------------------------------------------
-
     async with db_pool.acquire() as conn:
 
-        await save_message(
+        user_message_id = await save_message(
             conn,
             session_id,
             user_text_for_history,
@@ -1192,10 +1253,6 @@ async def process_message(
             msg_type=msg_type,
             media_url=media_url,
         )
-
-    # --------------------------------------------------------
-    # Обновляем долгосрочную память
-    # --------------------------------------------------------
 
     await refresh_chat_memory(
         session_id,
@@ -1205,6 +1262,7 @@ async def process_message(
     return {
         "translation": translation,
         "media_url": media_url,
+        "user_message_id": user_message_id,
     }
 
 
@@ -1284,12 +1342,6 @@ async def process_image(
             detail="Invalid image file",
         )
 
-    media_url = await upload_to_supabase(
-        jpeg_bytes,
-        "image/jpeg",
-        "jpg",
-    )
-
     image_base64 = base64.b64encode(
         jpeg_bytes
     ).decode("utf-8")
@@ -1313,13 +1365,38 @@ async def process_image(
         },
     ]
 
-    return await process_message(
+    # --------------------------------------------------------
+    # OpenRouter
+    # --------------------------------------------------------
+
+    result = await process_message(
         user_content,
         session_id,
         msg_type="image",
-        media_url=media_url,
+        media_url=None,
         user_text_for_history="",
     )
+
+    # --------------------------------------------------------
+    # Supabase запускаем ПОСЛЕ получения AI-ответа,
+    # но НЕ ждём его.
+    #
+    # Важно:
+    # сообщение уже сохранено в БД и мы знаем его ID.
+    # --------------------------------------------------------
+
+    asyncio.create_task(
+        upload_image_and_update_history(
+            jpeg_bytes,
+            result["user_message_id"],
+        )
+    )
+
+    return {
+        "translation": result["translation"],
+        "media_url": None,
+        "session_id": str(session_id),
+    }
 
 
 # ============================================================
@@ -1445,14 +1522,6 @@ async def message(
                     detail="Invalid image file",
                 )
 
-            media_url = (
-                await upload_to_supabase(
-                    jpeg_bytes,
-                    "image/jpeg",
-                    "jpg",
-                )
-            )
-
             image_base64 = (
                 base64.b64encode(
                     jpeg_bytes
@@ -1478,19 +1547,38 @@ async def message(
                 },
             ]
 
+            # ------------------------------------------------
+            # Сначала OpenRouter.
+            #
+            # Supabase пока НЕ ждём.
+            # ------------------------------------------------
+
             result = await process_message(
                 user_content,
                 session_id,
                 msg_type="image",
-                media_url=media_url,
+                media_url=None,
                 user_text_for_history="",
+            )
+
+            # ------------------------------------------------
+            # Теперь запускаем Supabase в фоне.
+            #
+            # Ответ клиенту его завершения НЕ ждёт.
+            # ------------------------------------------------
+
+            asyncio.create_task(
+                upload_image_and_update_history(
+                    jpeg_bytes,
+                    result["user_message_id"],
+                )
             )
 
             return {
                 "translation": result[
                     "translation"
                 ],
-                "media_url": media_url,
+                "media_url": None,
                 "session_id": session_id_str,
             }
 
@@ -1522,7 +1610,7 @@ async def message(
             )
 
             # ----------------------------------------------
-            # Upload audio
+            # Audio пока работает по старой схеме.
             # ----------------------------------------------
 
             media_url = (
@@ -1533,10 +1621,6 @@ async def message(
                 )
             )
 
-            # ----------------------------------------------
-            # Transcription
-            # ----------------------------------------------
-
             transcription = (
                 await transcribe_audio(
                     contents,
@@ -1544,10 +1628,6 @@ async def message(
                     filename,
                 )
             )
-
-            # ----------------------------------------------
-            # Send transcription to AI
-            # ----------------------------------------------
 
             user_content = [
                 {
