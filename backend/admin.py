@@ -11,6 +11,8 @@ from fastapi import (
     Request,
 )
 
+from backend.db import database as db_module
+
 load_dotenv()
 
 router = APIRouter()
@@ -68,7 +70,7 @@ async def get_users(
         db_pool = getattr(
             request.app.state,
             "db_pool",
-            None,
+            db_module.db_pool
         )
 
         if not db_pool:
@@ -203,7 +205,7 @@ async def get_admin_user_history(
     # Database pool
     # --------------------------------------------------------
 
-    db_pool = getattr(request.app.state, "db_pool", None)
+    db_pool = getattr(request.app.state, "db_pool", db_module.db_pool)
 
     if not db_pool:
         raise HTTPException(

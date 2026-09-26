@@ -9,6 +9,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 import './App.css';
+import { resizeImageIfNeeded } from './utils/image';
 
 
 // ============================================================
@@ -2866,27 +2867,29 @@ export default function App() {
   // File selection
   // ==========================================================
 
-  function handleFileSelect(
+  async function handleFileSelect(
     event
   ) {
-    const file =
+    const originalFile =
       event.target.files?.[0];
 
     event.target.value = '';
 
-    if (!file) {
+    if (!originalFile) {
       return;
     }
 
+    const file = await resizeImageIfNeeded(originalFile);
+
     const maxSize =
-      5 * 1024 * 1024;
+      10 * 1024 * 1024;
 
     if (
       file.size >
       maxSize
     ) {
       alert(
-        'Файл слишком большой. Максимальный размер — 5 МБ.'
+        'Файл слишком большой. Максимальный размер — 10 МБ.'
       );
 
       return;
