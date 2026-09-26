@@ -5,6 +5,7 @@ import base64
 import ssl
 import io
 import asyncio
+from random import SystemRandom
 from typing import Optional
 
 from fastapi import (
@@ -26,15 +27,18 @@ import pillow_heif
 
 from prompts import (
     get_unified_prompt,
+    get_exercise_prompt,
     get_summary_update_prompt,
     get_summary_rebuild_prompt,
 )
 
 
+# ============================================================
+# CONFIG
+# ============================================================
 
 load_dotenv()
 pillow_heif.register_heif_opener()
-
 
 app = FastAPI()
 
@@ -48,15 +52,21 @@ app.add_middleware(
 
 
 from admin import router as admin_router
+
 app.include_router(
     admin_router,
     prefix="/api/admin",
 )
 
 
-DEFAULT_LANGUAGE = "Spanish (Argentina)"
+DEFAULT_LANGUAGE = "Chinese"
+WELCOME_MESSAGE_CONTENT = (
+    "Я AI-переводчик, который также поможет тебе учить язык"
+)
 
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_API_KEY = os.getenv(
+    "OPENROUTER_API_KEY"
+)
 
 OPENROUTER_URL = (
     "https://openrouter.ai/api/v1/chat/completions"
@@ -69,13 +79,32 @@ TRANSCRIPTION_URL = (
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+SUPABASE_SERVICE_KEY = os.getenv(
+    "SUPABASE_SERVICE_KEY"
+)
 
 STORAGE_BUCKET = "chat-images"
 
 TEXT_MODEL = "openai/gpt-5.6-luna"
 VISION_MODEL = "openai/gpt-5.6-luna"
 TRANSCRIPTION_MODEL = "openai/whisper-large-v3"
+
+RANDOMIZER = SystemRandom()
+
+DEFAULT_TEMPERATURE = 0.7
+TRANSLATOR_TEMPERATURE = 0.82
+
+MAX_IMAGE_SIZE = 1600
+JPEG_QUALITY = 80
+
+OPENROUTER_TIMEOUT = httpx.Timeout(
+    connect=20,
+    read=90,
+    write=90,
+    pool=20,
+)
+
+DEFAULT_CONVERSATION_MODE = "translator"
 
 
 db_pool = None
@@ -153,8 +182,33 @@ async def startup():
                 """
             )
 
+            await conn.execute(
+                """
+                ALTER TABLE chat_history
+                ADD COLUMN IF NOT EXISTS
+                exercise_data TEXT
+                """
+            )
+
+            await conn.execute(
+                """
+                ALTER TABLE user_settings
+                ADD COLUMN IF NOT EXISTS
+                conversation_mode VARCHAR(20)
+                DEFAULT 'translator'
+                """
+            )
+
+            await conn.execute(
+                """
+                ALTER TABLE user_settings
+                ADD COLUMN IF NOT EXISTS
+                welcome_exercise_data TEXT
+                """
+            )
+
             # ==================================================
-            # Долговременная память одного постоянного чата
+            # LONG-TERM CHAT MEMORY
             # ==================================================
 
             await conn.execute(
@@ -196,7 +250,7 @@ def get_session_id(
     """
     Приоритет:
 
-    1. X-Session-Id header
+    1. X-Session-Id
     2. session_id из Form/query
     3. новый UUID
     """
@@ -220,6 +274,7 @@ async def save_message(
     ai_reply,
     msg_type="text",
     media_url=None,
+    exercise=None,
 ):
     user_message_id = await conn.fetchval(
         """
@@ -241,7 +296,15 @@ async def save_message(
         media_url,
     )
 
-    await conn.execute(
+    exercise_json = None
+
+    if exercise is not None:
+        exercise_json = json.dumps(
+            exercise,
+            ensure_ascii=False,
+        )
+
+    assistant_message_id = await conn.fetchval(
         """
         INSERT INTO chat_history
         (
@@ -249,34 +312,31 @@ async def save_message(
             role,
             content,
             message_type,
-            media_url
+            media_url,
+            exercise_data
         )
-        VALUES ($1, $2, $3, $4, $5)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING id
         """,
         session_id,
         "assistant",
         ai_reply,
         "text",
         None,
+        exercise_json,
     )
 
-    return user_message_id
+    return user_message_id, assistant_message_id
 
 
 async def update_message_media_url(
     message_id: int,
     media_url: str,
 ):
-    """
-    Обновляет media_url уже после загрузки
-    файла в Supabase.
-    """
-
     if not db_pool:
         return
 
     try:
-
         async with db_pool.acquire() as conn:
 
             await conn.execute(
@@ -295,7 +355,6 @@ async def update_message_media_url(
         )
 
     except Exception as e:
-
         print(
             f"Failed to update media_url "
             f"for message {message_id}: {e}"
@@ -307,13 +366,10 @@ async def upload_image_and_update_history(
     message_id: int,
 ):
     """
-    Фоновая задача:
+    Background upload.
 
-    1. Загружает изображение в Supabase.
-    2. Получает media_url.
-    3. Записывает media_url в chat_history.
-
-    Эта задача НЕ блокирует ответ OpenRouter.
+    OpenRouter response is returned to user first.
+    Supabase upload happens independently.
     """
 
     try:
@@ -342,53 +398,316 @@ async def upload_image_and_update_history(
         )
 
 
-async def get_user_language(
-    session_id: uuid.UUID,
+def normalize_conversation_mode(value) -> str:
+    if value == "teacher":
+        return "teacher"
+
+    return DEFAULT_CONVERSATION_MODE
+
+
+def normalize_learner_level_hint(value) -> str:
+    allowed = {
+        "unknown",
+        "beginner",
+        "elementary",
+        "intermediate",
+        "upper_intermediate",
+    }
+
+    value = str(value or "unknown").strip().lower()
+
+    if value in allowed:
+        return value
+
+    return "unknown"
+
+
+def detect_preferred_exercise_type(
+    chat_summary: str,
 ) -> str:
+    summary = (chat_summary or "").lower()
+
+    if any(
+        marker in summary
+        for marker in (
+            "поиск пар",
+            "пары между",
+            "pinyin и перевод",
+            "пары и перевод",
+        )
+    ):
+        return "matching_pairs"
+
+    return "auto"
+
+
+async def get_user_settings(
+    session_id: uuid.UUID,
+) -> tuple[str, str]:
 
     if not db_pool:
-        return DEFAULT_LANGUAGE
+        return (
+            DEFAULT_LANGUAGE,
+            DEFAULT_CONVERSATION_MODE,
+        )
 
     try:
+
         async with db_pool.acquire() as conn:
 
             row = await conn.fetchrow(
                 """
-                SELECT target_language_name
+                SELECT
+                    target_language_name,
+                    conversation_mode
                 FROM user_settings
                 WHERE session_id = $1
                 """,
                 session_id,
             )
 
-            if row and row["target_language_name"]:
-                return row["target_language_name"]
+            if row:
+                language = (
+                    row["target_language_name"]
+                    or DEFAULT_LANGUAGE
+                )
+
+                mode = normalize_conversation_mode(
+                    row["conversation_mode"]
+                )
+
+                return language, mode
 
             await conn.execute(
                 """
                 INSERT INTO user_settings
                 (
                     session_id,
-                    target_language_name
+                    target_language_name,
+                    conversation_mode
                 )
-                VALUES ($1, $2)
+                VALUES ($1, $2, $3)
                 ON CONFLICT (session_id)
                 DO NOTHING
                 """,
                 session_id,
                 DEFAULT_LANGUAGE,
+                DEFAULT_CONVERSATION_MODE,
             )
 
     except Exception as e:
+
         print(
-            f"Error getting language: {e}"
+            f"Error getting user settings: {e}"
         )
 
-    return DEFAULT_LANGUAGE
+    return (
+        DEFAULT_LANGUAGE,
+        DEFAULT_CONVERSATION_MODE,
+    )
+
+
+async def get_user_language(
+    session_id: uuid.UUID,
+) -> str:
+
+    language, _ = await get_user_settings(
+        session_id
+    )
+
+    return language
+
+
+async def save_conversation_mode(
+    session_id: uuid.UUID,
+    mode: str,
+):
+    mode = normalize_conversation_mode(mode)
+
+    if not db_pool:
+        return
+
+    try:
+
+        async with db_pool.acquire() as conn:
+
+            await conn.execute(
+                """
+                INSERT INTO user_settings
+                (
+                    session_id,
+                    target_language_name,
+                    conversation_mode
+                )
+                VALUES ($1, $2, $3)
+                ON CONFLICT (session_id)
+                DO UPDATE SET
+                    conversation_mode =
+                        EXCLUDED.conversation_mode
+                """,
+                session_id,
+                DEFAULT_LANGUAGE,
+                mode,
+            )
+
+    except Exception as e:
+
+        print(
+            f"Error saving conversation_mode: {e}"
+        )
+
+
+async def save_welcome_exercise(
+    session_id: uuid.UUID,
+    exercise: dict,
+):
+    if not db_pool:
+        return
+
+    try:
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO user_settings
+                (
+                    session_id,
+                    target_language_name,
+                    conversation_mode,
+                    welcome_exercise_data
+                )
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (session_id)
+                DO UPDATE SET
+                    welcome_exercise_data = EXCLUDED.welcome_exercise_data
+                """,
+                session_id,
+                DEFAULT_LANGUAGE,
+                DEFAULT_CONVERSATION_MODE,
+                json.dumps(exercise, ensure_ascii=False),
+            )
+
+            await conn.execute(
+                """
+                INSERT INTO chat_history
+                (
+                    session_id,
+                    role,
+                    content,
+                    message_type,
+                    exercise_data
+                )
+                SELECT $1, 'assistant', $2, 'text', $3
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM chat_history
+                    WHERE session_id = $1
+                      AND role = 'assistant'
+                      AND content = $2
+                )
+                """,
+                session_id,
+                WELCOME_MESSAGE_CONTENT,
+                json.dumps(exercise, ensure_ascii=False),
+            )
+    except Exception as e:
+        print(f"Error saving welcome exercise: {e}")
+
+
+async def get_welcome_exercise(
+    session_id: uuid.UUID,
+):
+    if not db_pool:
+        return None
+
+    try:
+        async with db_pool.acquire() as conn:
+            raw = await conn.fetchval(
+                """
+                SELECT welcome_exercise_data
+                FROM user_settings
+                WHERE session_id = $1
+                """,
+                session_id,
+            )
+
+        if not raw:
+            return None
+
+        value = json.loads(raw) if isinstance(raw, str) else raw
+        return value if isinstance(value, dict) else None
+    except Exception as e:
+        print(f"Error reading welcome exercise: {e}")
+        return None
+
+
+async def clear_welcome_exercise(
+    session_id: uuid.UUID,
+):
+    if not db_pool:
+        return
+
+    try:
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE user_settings
+                SET welcome_exercise_data = NULL
+                WHERE session_id = $1
+                """,
+                session_id,
+            )
+    except Exception as e:
+        print(f"Error clearing welcome exercise: {e}")
+
+
+async def attach_welcome_exercises_to_message(
+    session_id: uuid.UUID,
+    assistant_message_id: Optional[int],
+    exercises,
+):
+    if not exercises or not db_pool:
+        return
+
+    try:
+        async with db_pool.acquire() as conn:
+            message_id = assistant_message_id
+
+            if not message_id:
+                message_id = await conn.fetchval(
+                    """
+                    SELECT id
+                    FROM chat_history
+                    WHERE session_id = $1
+                      AND role = 'assistant'
+                      AND content = $2
+                    ORDER BY id ASC
+                    LIMIT 1
+                    """,
+                    session_id,
+                    WELCOME_MESSAGE_CONTENT,
+                )
+
+            if not message_id:
+                return
+
+            await conn.execute(
+                """
+                UPDATE chat_history
+                SET exercise_data = $1
+                WHERE id = $2
+                  AND session_id = $3
+                  AND role = 'assistant'
+                """,
+                json.dumps(exercises, ensure_ascii=False),
+                message_id,
+                session_id,
+            )
+    except Exception as e:
+        print(f"Error attaching welcome exercises: {e}")
 
 
 # ============================================================
-# RECENT HISTORY
+# HISTORY
 # ============================================================
 
 RECENT_HISTORY_LIMIT = 20
@@ -412,6 +731,52 @@ async def get_recent_history(
     )
 
     return list(reversed(rows))
+
+
+async def get_recent_exercises(
+    conn,
+    session_id: uuid.UUID,
+    limit: int = 40,
+):
+    rows = await conn.fetch(
+        """
+        SELECT exercise_data
+        FROM chat_history
+        WHERE session_id = $1
+          AND exercise_data IS NOT NULL
+        ORDER BY created_at DESC, id DESC
+        LIMIT $2
+        """,
+        session_id,
+        limit,
+    )
+
+    exercises = []
+
+    for row in reversed(rows):
+        raw = row["exercise_data"]
+
+        try:
+            value = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            continue
+
+        values = value if isinstance(value, list) else [value]
+
+        for exercise in values:
+            if not isinstance(exercise, dict):
+                continue
+
+            question = (
+                exercise.get("question")
+                or exercise.get("text")
+                or ""
+            )
+
+            if question:
+                exercises.append(str(question).strip())
+
+    return exercises
 
 
 async def get_all_history(
@@ -507,6 +872,7 @@ def normalize_memory_updates(
     result = []
 
     for item in value:
+
         if not isinstance(item, str):
             continue
 
@@ -567,6 +933,7 @@ async def update_summary_from_memory_updates(
     current_summary: str,
     memory_updates: list[str],
 ):
+
     if not memory_updates:
         return
 
@@ -601,9 +968,11 @@ async def update_summary_from_memory_updates(
     ).strip()
 
     if not new_summary:
+
         print(
             "Summary update returned empty summary."
         )
+
         return
 
     await save_chat_summary(
@@ -611,16 +980,14 @@ async def update_summary_from_memory_updates(
         new_summary,
     )
 
-    print(
-        "Chat summary updated from memory updates."
-    )
-
 
 async def rebuild_chat_summary(
     session_id: uuid.UUID,
     current_summary: str,
 ):
+
     async with db_pool.acquire() as conn:
+
         history_rows = await get_all_history(
             conn,
             session_id,
@@ -661,9 +1028,11 @@ async def rebuild_chat_summary(
     ).strip()
 
     if not new_summary:
+
         print(
             "Full summary rebuild returned empty summary."
         )
+
         return
 
     await save_chat_summary(
@@ -671,41 +1040,22 @@ async def rebuild_chat_summary(
         new_summary,
     )
 
-    print(
-        "Chat summary fully rebuilt from history."
-    )
-
 
 async def refresh_chat_memory(
     session_id: uuid.UUID,
     memory_updates: list[str],
 ):
-    """
-    Обновление памяти.
-
-    Приоритет:
-
-    1. Если появился новый важный факт —
-       сразу обновить summary.
-
-    2. Если новых фактов нет, но накопилось
-       достаточно сообщений —
-       выполнить полную пересборку summary
-       из исходной истории.
-
-    Ошибка памяти не должна ломать
-    основной ответ пользователю.
-    """
 
     try:
 
         async with db_pool.acquire() as conn:
 
-            current_summary, summary_message_count = (
-                await get_chat_memory(
-                    conn,
-                    session_id,
-                )
+            (
+                current_summary,
+                summary_message_count,
+            ) = await get_chat_memory(
+                conn,
+                session_id,
             )
 
             total_message_count = (
@@ -754,9 +1104,11 @@ async def refresh_chat_memory(
 async def call_openrouter(
     messages: list,
     model: str,
+    temperature: float = DEFAULT_TEMPERATURE,
 ):
 
     if not OPENROUTER_API_KEY:
+
         raise HTTPException(
             status_code=500,
             detail="API Key not configured",
@@ -775,16 +1127,17 @@ async def call_openrouter(
         "response_format": {
             "type": "json_object"
         },
-        "temperature": 0.7,
+        "temperature": temperature,
     }
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(
+        timeout=OPENROUTER_TIMEOUT
+    ) as client:
 
         response = await client.post(
             OPENROUTER_URL,
             headers=headers,
             json=payload,
-            timeout=60.0,
         )
 
     if response.status_code != 200:
@@ -824,6 +1177,7 @@ async def call_openrouter(
     )
 
     if not raw_content:
+
         raise HTTPException(
             status_code=500,
             detail="ИИ вернул пустой ответ.",
@@ -836,13 +1190,17 @@ async def call_openrouter(
         parsed = json.loads(raw_text)
 
         print(
-            "\n========== PARSED TRANSLATION =========="
+            "\n========== AI RESPONSE =========="
         )
         print(
-            repr(parsed.get("translation"))
+            json.dumps(
+                parsed,
+                ensure_ascii=False,
+                indent=2,
+            )
         )
         print(
-            "========================================\n"
+            "=================================\n"
         )
 
     except json.JSONDecodeError:
@@ -1111,13 +1469,14 @@ async def transcribe_audio(
         f"size={len(audio_bytes)} bytes"
     )
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(
+        timeout=OPENROUTER_TIMEOUT
+    ) as client:
 
         resp = await client.post(
             TRANSCRIPTION_URL,
             headers=headers,
             json=payload,
-            timeout=60.0,
         )
 
     if resp.status_code != 200:
@@ -1151,11 +1510,6 @@ async def transcribe_audio(
         data["text"].strip()
     )
 
-    print(
-        "Transcription result: "
-        f"{transcription}"
-    )
-
     if not transcription:
 
         raise HTTPException(
@@ -1166,7 +1520,205 @@ async def transcribe_audio(
             ),
         )
 
+    print(
+        "Transcription result: "
+        f"{transcription}"
+    )
+
     return transcription
+
+
+# ============================================================
+# EXERCISE
+# ============================================================
+
+def fallback_exercise(translation: str) -> dict:
+    snippet = (translation or "").strip()
+
+    if "\n" in snippet:
+        snippet = snippet.split("\n", 1)[0].strip()
+
+    if len(snippet) > 80:
+        snippet = snippet[:77].rstrip() + "…"
+
+    if snippet:
+        is_negative = (
+            sum(ord(char) for char in snippet) % 2
+        ) == 1
+
+        if is_negative:
+            question = (
+                "Означает ли этот перевод "
+                "противоположное исходному смыслу: "
+                f"«{snippet}»?"
+            )
+            correct_answer = "no"
+            explanation = (
+                "Нет, перевод сохраняет исходный смысл."
+            )
+        else:
+            question = (
+                "Передаёт ли этот перевод смысл "
+                f"исходной фразы: «{snippet}»?"
+            )
+            correct_answer = "yes"
+            explanation = (
+                "Да, перевод сохраняет исходный смысл."
+            )
+    else:
+        question = (
+            "Правильно ли вы поняли перевод?"
+        )
+        correct_answer = "yes"
+        explanation = (
+            "Это упражнение к текущему переводу."
+        )
+
+    return {
+        "type": "yes_no",
+        "question": question,
+        "correct_answer": correct_answer,
+        "explanation": explanation,
+    }
+
+
+def normalize_exercise(
+    exercise,
+    conversation_mode: str,
+    translation: str,
+):
+    question = ""
+    correct_answer = ""
+    explanation = ""
+
+    if isinstance(exercise, dict):
+        exercise_type = str(
+            exercise.get("type") or "yes_no"
+        ).strip().lower()
+
+        if exercise_type in (
+            "matching_pairs",
+            "translation_choice",
+        ):
+            pairs = exercise.get("pairs")
+
+            if isinstance(pairs, list):
+                normalized_pairs = []
+
+                for pair in pairs:
+                    if not isinstance(pair, dict):
+                        continue
+
+                    term = str(
+                        pair.get("term")
+                        or pair.get("word")
+                        or ""
+                    ).strip()
+                    translation_value = str(
+                        pair.get("translation")
+                        or ""
+                    ).strip()
+
+                    if term and translation_value:
+                        normalized_pairs.append({
+                            "term": term,
+                            "translation": translation_value,
+                        })
+
+            else:
+                normalized_pairs = []
+
+            if 2 <= len(normalized_pairs) <= 5:
+                RANDOMIZER.shuffle(normalized_pairs)
+                translations = [
+                    pair["translation"]
+                    for pair in normalized_pairs
+                ]
+                RANDOMIZER.shuffle(translations)
+
+                first_pair = normalized_pairs[0]
+                distractors = [
+                    value
+                    for value in translations
+                    if value != first_pair["translation"]
+                ]
+                initial_options = [
+                    first_pair["translation"]
+                ]
+                if distractors:
+                    initial_options.append(
+                        RANDOMIZER.choice(distractors)
+                    )
+                RANDOMIZER.shuffle(initial_options)
+
+                return {
+                    "type": "matching_pairs",
+                    "question": str(
+                        "Найди пары"
+                    ),
+                    "pairs": normalized_pairs,
+                    "translations": translations,
+                    "initial_options": initial_options,
+                    "explanation": str(
+                        exercise.get("explanation") or ""
+                    ).strip(),
+                }
+
+        question = (
+            exercise.get("question")
+            or exercise.get("text")
+            or ""
+        )
+        question = str(question).strip()
+
+        correct_answer = (
+            exercise.get("correct_answer")
+            or exercise.get("answer")
+            or ""
+        )
+        correct_answer = str(
+            correct_answer
+        ).strip().lower()
+
+        if correct_answer in (
+            "да",
+            "true",
+            "1",
+        ):
+            correct_answer = "yes"
+
+        if correct_answer in (
+            "нет",
+            "false",
+            "0",
+        ):
+            correct_answer = "no"
+
+        explanation = str(
+            exercise.get("explanation") or ""
+        ).strip()
+
+        for prefix in (
+            "Мини-упражнение:",
+            "Упражнение:",
+        ):
+            if question.startswith(prefix):
+                question = question[
+                    len(prefix):
+                ].strip()
+
+    if (
+        question
+        and correct_answer in ("yes", "no")
+    ):
+        return {
+            "type": "yes_no",
+            "question": question,
+            "correct_answer": correct_answer,
+            "explanation": explanation,
+        }
+
+    return fallback_exercise(translation)
 
 
 # ============================================================
@@ -1179,9 +1731,13 @@ async def process_message(
     msg_type="text",
     media_url=None,
     user_text_for_history="",
+    learner_level_hint="unknown",
 ):
 
-    target_lang = await get_user_language(
+    (
+        target_lang,
+        conversation_mode,
+    ) = await get_user_settings(
         session_id
     )
 
@@ -1198,6 +1754,20 @@ async def process_message(
             session_id,
         )
 
+        used_exercises = await get_recent_exercises(
+            conn,
+            session_id,
+        )
+
+    used_exercises_block = "\n".join(
+        f"- {question}"
+        for question in used_exercises
+    )
+
+    preferred_exercise_type = detect_preferred_exercise_type(
+        chat_summary
+    )
+
     history_messages = [
         {
             "role": row["role"],
@@ -1206,23 +1776,18 @@ async def process_message(
         for row in history_rows
     ]
 
-    if not history_messages:
-
-        history_messages = [
-            {
-                "role": "assistant",
-                "content": (
-                    "Какой у вас уровень испанского?"
-                ),
-            }
-        ]
-
     messages = [
         {
             "role": "system",
             "content": get_unified_prompt(
                 target_lang,
                 chat_summary=chat_summary,
+                conversation_mode=conversation_mode,
+                learner_level_hint=normalize_learner_level_hint(
+                    learner_level_hint
+                ),
+                used_exercises=used_exercises_block,
+                preferred_exercise_type=preferred_exercise_type,
             ),
         },
         *history_messages,
@@ -1232,9 +1797,19 @@ async def process_message(
         },
     ]
 
+    model = TEXT_MODEL
+
+    if msg_type == "image":
+        model = VISION_MODEL
+
     result = await call_openrouter(
         messages,
-        model=TEXT_MODEL,
+        model=model,
+        temperature=(
+            TRANSLATOR_TEMPERATURE
+            if conversation_mode == "translator"
+            else DEFAULT_TEMPERATURE
+        ),
     )
 
     translation = (
@@ -1248,19 +1823,42 @@ async def process_message(
             detail="ИИ не вернул ответ.",
         )
 
+    returned_mode = result.get("mode")
+
+    if returned_mode in (
+        "translator",
+        "teacher",
+    ) and returned_mode != conversation_mode:
+
+        await save_conversation_mode(
+            session_id,
+            returned_mode,
+        )
+        conversation_mode = returned_mode
+
     memory_updates = normalize_memory_updates(
         result.get("memory_updates")
     )
 
+    exercise = normalize_exercise(
+        result.get("exercise"),
+        conversation_mode,
+        translation,
+    )
+
     async with db_pool.acquire() as conn:
 
-        user_message_id = await save_message(
+        (
+            user_message_id,
+            assistant_message_id,
+        ) = await save_message(
             conn,
             session_id,
             user_text_for_history,
             translation,
             msg_type=msg_type,
             media_url=media_url,
+            exercise=None,
         )
 
     await refresh_chat_memory(
@@ -1270,8 +1868,11 @@ async def process_message(
 
     return {
         "translation": translation,
+        "exercise": exercise,
         "media_url": media_url,
         "user_message_id": user_message_id,
+        "assistant_message_id": assistant_message_id,
+        "mode": conversation_mode,
     }
 
 
@@ -1282,6 +1883,7 @@ async def process_message(
 async def process_text(
     text: str,
     session_id: uuid.UUID,
+    learner_level_hint="unknown",
 ) -> dict:
 
     user_content = [
@@ -1296,13 +1898,169 @@ async def process_text(
         session_id,
         msg_type="text",
         user_text_for_history=text,
+        learner_level_hint=learner_level_hint,
     )
-
 
 
 # ============================================================
 # /api/message
 # ============================================================
+
+@app.post("/api/welcome-exercise")
+async def generate_welcome_exercise(
+    req: Request,
+    session_id_form: Optional[str] = Form(
+        None,
+        alias="session_id",
+    ),
+    learner_level_hint: Optional[str] = Form(
+        "unknown"
+    ),
+    preferred_exercise_type: Optional[str] = Form(None),
+):
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(
+            status_code=500,
+            detail="API Key not configured",
+        )
+
+    session_id_str = get_session_id(
+        req,
+        session_id_form,
+    )
+
+    try:
+        session_id = uuid.UUID(session_id_str)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid session ID",
+        )
+
+    existing = await get_welcome_exercise(session_id)
+
+    existing_question = str(
+        (existing or {}).get("question") or ""
+    ).lower()
+
+    generic_greeting = any(
+        marker in existing_question
+        for marker in (
+            "你好",
+            "nǐ hǎo",
+            "ни хао",
+            "hola",
+            "привет",
+        )
+    )
+
+    if existing and not generic_greeting:
+        await save_welcome_exercise(
+            session_id,
+            existing,
+        )
+
+        return {
+            "exercise": existing,
+            "session_id": session_id_str,
+        }
+
+    target_lang, _ = await get_user_settings(session_id)
+
+    async with db_pool.acquire() as conn:
+        recent_rows = await get_recent_history(
+            conn,
+            session_id,
+            20,
+        )
+        chat_summary, _ = await get_chat_memory(
+            conn,
+            session_id,
+        )
+
+        used_exercises = await get_recent_exercises(
+            conn,
+            session_id,
+        )
+
+    context_parts = []
+
+    if chat_summary:
+        context_parts.append(
+            f"Сохранённое обобщение:\n{chat_summary}"
+        )
+
+    if recent_rows:
+        context_parts.append(
+            "История сообщений:\n" + "\n".join(
+                f"{row['role']}: {str(row['content'] or '')[:500]}"
+                for row in recent_rows
+                if str(row['content'] or '').strip()
+            )
+        )
+
+    prompt = get_exercise_prompt(
+        target_lang,
+        normalize_learner_level_hint(
+            learner_level_hint
+        ),
+        learning_context="\n\n".join(context_parts),
+        used_exercises="\n".join(
+            f"- {question}"
+            for question in used_exercises
+        ),
+        preferred_exercise_type=(
+            preferred_exercise_type
+            if preferred_exercise_type in (
+                "matching_pairs",
+                "yes_no",
+            )
+            else detect_preferred_exercise_type(
+                chat_summary
+            )
+        ),
+    )
+
+    result = await call_openrouter(
+        [
+            {
+                "role": "system",
+                "content": prompt,
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Создай welcome-упражнение для нового шага. "
+                    "Не привязывай его к последнему переводу: "
+                    "выбери простую интересную тему или частотное "
+                    "выражение, подходящее уровню пользователя. "
+                    "Не используй стандартный пример «你好 (nǐ hǎo) "
+                    "означает «привет»» и не начинай всегда с приветствия. "
+                    "Выбери другую тему: еда, покупки, транспорт, "
+                    "время, числа, повседневные действия или интересы "
+                    "пользователя."
+                ),
+            },
+        ],
+        model=TEXT_MODEL,
+        temperature=TRANSLATOR_TEMPERATURE,
+    )
+
+    exercise = normalize_exercise(
+        result.get("exercise"),
+        "translator",
+        "",
+    )
+
+    await save_welcome_exercise(
+        session_id,
+        exercise,
+    )
+
+    return {
+        "exercise": exercise,
+        "session_id": session_id_str,
+    }
 
 @app.post("/api/message")
 async def message(
@@ -1312,6 +2070,12 @@ async def message(
     session_id_form: Optional[str] = Form(
         None,
         alias="session_id",
+    ),
+    learner_level_hint: Optional[str] = Form(
+        "unknown"
+    ),
+    welcome_exercises: Optional[str] = Form(
+        None
     ),
 ):
 
@@ -1350,6 +2114,44 @@ async def message(
             status_code=400,
             detail="Invalid session ID",
         )
+
+    saved_welcome_exercises = []
+
+    if welcome_exercises:
+        try:
+            parsed_welcome = json.loads(welcome_exercises)
+
+            if isinstance(parsed_welcome, dict):
+                parsed_welcome = [parsed_welcome]
+
+            if isinstance(parsed_welcome, list):
+                saved_welcome_exercises = [
+                    item
+                    for item in parsed_welcome
+                    if isinstance(item, dict)
+                ]
+        except Exception:
+            saved_welcome_exercises = []
+
+    if not saved_welcome_exercises:
+        pending_welcome = await get_welcome_exercise(
+            session_id
+        )
+
+        if pending_welcome:
+            saved_welcome_exercises = [
+                pending_welcome
+            ]
+
+    async def finalize_welcome_exercises(result):
+        if saved_welcome_exercises:
+            await attach_welcome_exercises_to_message(
+                session_id,
+                result.get("assistant_message_id"),
+                saved_welcome_exercises,
+            )
+
+        await clear_welcome_exercise(session_id)
 
     # --------------------------------------------------------
     # FILE
@@ -1399,12 +2201,20 @@ async def message(
 
                 img = img.convert("RGB")
 
+                img.thumbnail(
+                    (
+                        MAX_IMAGE_SIZE,
+                        MAX_IMAGE_SIZE,
+                    ),
+                    Image.LANCZOS,
+                )
+
                 buffer = io.BytesIO()
 
                 img.save(
                     buffer,
                     format="JPEG",
-                    quality=85,
+                    quality=JPEG_QUALITY,
                 )
 
                 jpeg_bytes = (
@@ -1414,8 +2224,7 @@ async def message(
             except Exception as e:
 
                 print(
-                    f"Image processing error: "
-                    f"{e}"
+                    f"Image processing error: {e}"
                 )
 
                 raise HTTPException(
@@ -1442,16 +2251,17 @@ async def message(
                 {
                     "type": "text",
                     "text": (
-                        "(User sent an image. "
-                        "Please analyze it.)"
+                        "User sent an image. "
+                        "Extract any text and "
+                        "translate it. Do not "
+                        "start a discussion about "
+                        "the photo."
                     ),
                 },
             ]
 
             # ------------------------------------------------
-            # Сначала OpenRouter.
-            #
-            # Supabase пока НЕ ждём.
+            # OPENROUTER FIRST
             # ------------------------------------------------
 
             result = await process_message(
@@ -1460,12 +2270,11 @@ async def message(
                 msg_type="image",
                 media_url=None,
                 user_text_for_history="",
+                learner_level_hint=learner_level_hint,
             )
 
             # ------------------------------------------------
-            # Теперь запускаем Supabase в фоне.
-            #
-            # Ответ клиенту его завершения НЕ ждёт.
+            # SUPABASE IN BACKGROUND
             # ------------------------------------------------
 
             asyncio.create_task(
@@ -1475,11 +2284,19 @@ async def message(
                 )
             )
 
+            await finalize_welcome_exercises(result)
+
             return {
                 "translation": result[
                     "translation"
                 ],
+                "exercise": result.get(
+                    "exercise"
+                ),
                 "media_url": None,
+                "assistant_message_id": result[
+                    "assistant_message_id"
+                ],
                 "session_id": session_id_str,
             }
 
@@ -1503,24 +2320,14 @@ async def message(
                 )
             )
 
-            print(
-                "Audio detected: "
-                f"format={audio_format}, "
-                f"storage_type="
-                f"{storage_content_type}"
-            )
-
-            # ----------------------------------------------
-            # Audio пока работает по старой схеме.
-            # ----------------------------------------------
-
-            media_url = (
-                await upload_to_supabase(
-                    contents,
-                    storage_content_type,
-                    audio_format,
-                )
-            )
+            # ------------------------------------------------
+            # IMPORTANT:
+            #
+            # Transcription is needed before AI.
+            #
+            # Storage is independent and does not need
+            # to block transcription.
+            # ------------------------------------------------
 
             transcription = (
                 await transcribe_audio(
@@ -1530,48 +2337,85 @@ async def message(
                 )
             )
 
-            user_content = [
-                {
-                    "type": "text",
-                    "text": (
-                        "(User sent an audio "
-                        "message. "
-                        "Here is the transcription: "
-                        f"'{transcription}')"
-                    ),
-                }
-            ]
-
             result = await process_message(
-                user_content,
+                [
+                    {
+                        "type": "text",
+                        "text": (
+                            "User sent an audio "
+                            "message.\n\n"
+                            "Transcription:\n"
+                            f"{transcription}"
+                        ),
+                    }
+                ],
                 session_id,
                 msg_type="audio",
-                media_url=media_url,
+                media_url=None,
                 user_text_for_history=(
                     transcription
                 ),
+                learner_level_hint=learner_level_hint,
             )
+
+            async def upload_audio():
+
+                try:
+
+                    url = await upload_to_supabase(
+                        contents,
+                        storage_content_type,
+                        audio_format,
+                    )
+
+                    await update_message_media_url(
+                        result["user_message_id"],
+                        url,
+                    )
+
+                    print(
+                        "Background audio upload "
+                        "completed:",
+                        url,
+                    )
+
+                except Exception as e:
+
+                    print(
+                        "Background audio upload "
+                        f"failed: {e}"
+                    )
+
+            asyncio.create_task(
+                upload_audio()
+            )
+
+            await finalize_welcome_exercises(result)
 
             return {
                 "translation": result[
                     "translation"
                 ],
-                "media_url": media_url,
+                "exercise": result.get(
+                    "exercise"
+                ),
+                "media_url": None,
+                "assistant_message_id": result[
+                    "assistant_message_id"
+                ],
                 "transcription": transcription,
                 "session_id": session_id_str,
             }
 
         # ====================================================
-        # UNSUPPORTED FILE
+        # UNSUPPORTED
         # ====================================================
 
         else:
 
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    "Unsupported file type."
-                ),
+                detail="Unsupported file type.",
             )
 
     # ========================================================
@@ -1583,13 +2427,22 @@ async def message(
         result = await process_text(
             text.strip(),
             session_id,
+            learner_level_hint=learner_level_hint,
         )
+
+        await finalize_welcome_exercises(result)
 
         return {
             "translation": result[
                 "translation"
             ],
+            "exercise": result.get(
+                "exercise"
+            ),
             "media_url": None,
+            "assistant_message_id": result[
+                "assistant_message_id"
+            ],
             "session_id": session_id_str,
         }
 
@@ -1605,8 +2458,194 @@ async def message(
         )
 
 
+@app.post("/api/exercise")
+async def generate_next_exercise(
+    req: Request,
+    translation: str = Form(""),
+    source_text: str = Form(""),
+    assistant_message_id: Optional[int] = Form(None),
+    answered_exercise: str = Form(""),
+    session_id_form: Optional[str] = Form(
+        None,
+        alias="session_id",
+    ),
+    learner_level_hint: Optional[str] = Form(
+        "unknown"
+    ),
+):
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(
+            status_code=500,
+            detail="API Key not configured",
+        )
+
+    session_id_str = get_session_id(
+        req,
+        session_id_form,
+    )
+
+    try:
+        session_id = uuid.UUID(session_id_str)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid session ID",
+        )
+
+    target_lang, conversation_mode = await get_user_settings(
+        session_id
+    )
+
+    async with db_pool.acquire() as conn:
+        recent_rows = await get_recent_history(
+            conn,
+            session_id,
+            20,
+        )
+        chat_summary, _ = await get_chat_memory(
+            conn,
+            session_id,
+        )
+
+        used_exercises = await get_recent_exercises(
+            conn,
+            session_id,
+        )
+
+    learning_context_parts = []
+
+    if chat_summary:
+        learning_context_parts.append(
+            f"Сохранённое обобщение:\n{chat_summary}"
+        )
+
+    if recent_rows:
+        recent_text = []
+
+        for row in recent_rows:
+            content = str(row["content"] or "").strip()
+
+            if content:
+                recent_text.append(
+                    f"{row['role']}: {content[:500]}"
+                )
+
+        if recent_text:
+            learning_context_parts.append(
+                "Последние сообщения для выявления повторяющихся "
+                "тем:\n" + "\n".join(recent_text)
+            )
+
+    learning_context = "\n\n".join(
+        learning_context_parts
+    )
+
+    if assistant_message_id and answered_exercise:
+        try:
+            answered = json.loads(answered_exercise)
+
+            if isinstance(answered, dict):
+                async with db_pool.acquire() as conn:
+                    raw = await conn.fetchval(
+                        """
+                        SELECT exercise_data
+                        FROM chat_history
+                        WHERE id = $1
+                          AND session_id = $2
+                          AND role = 'assistant'
+                        """,
+                        assistant_message_id,
+                        session_id,
+                    )
+
+                    saved = []
+
+                    if raw:
+                        saved = (
+                            json.loads(raw)
+                            if isinstance(raw, str)
+                            else raw
+                        )
+
+                    if isinstance(saved, dict):
+                        saved = [saved]
+
+                    if not isinstance(saved, list):
+                        saved = []
+
+                    saved.append(answered)
+
+                    await conn.execute(
+                        """
+                        UPDATE chat_history
+                        SET exercise_data = $1
+                        WHERE id = $2
+                          AND session_id = $3
+                          AND role = 'assistant'
+                        """,
+                        json.dumps(
+                            saved,
+                            ensure_ascii=False,
+                        ),
+                        assistant_message_id,
+                        session_id,
+                    )
+        except Exception as error:
+            print(
+                f"Exercise history save failed: {error}"
+            )
+
+    prompt = get_exercise_prompt(
+        target_lang,
+        normalize_learner_level_hint(
+            learner_level_hint
+        ),
+        learning_context=learning_context,
+        used_exercises="\n".join(
+            f"- {question}"
+            for question in used_exercises
+        ),
+        preferred_exercise_type=detect_preferred_exercise_type(
+            chat_summary
+        ),
+    )
+
+    context = (
+        f"Исходная фраза пользователя:\n{source_text}\n\n"
+        f"Перевод:\n{translation}"
+    )
+
+    result = await call_openrouter(
+        [
+            {
+                "role": "system",
+                "content": prompt,
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": context,
+                    }
+                ],
+            },
+        ],
+        model=TEXT_MODEL,
+        temperature=TRANSLATOR_TEMPERATURE,
+    )
+
+    return {
+        "exercise": normalize_exercise(
+            result.get("exercise"),
+            "translator",
+            translation,
+        )
+    }
+
+
 # ============================================================
-# /api/history
+# HISTORY
 # ============================================================
 
 @app.get("/api/history")
@@ -1640,10 +2679,12 @@ async def get_history(
             rows = await conn.fetch(
                 """
                 SELECT
+                    id,
                     role,
                     content,
                     message_type,
-                    media_url
+                    media_url,
+                    exercise_data
                 FROM chat_history
                 WHERE session_id = $1
                 ORDER BY created_at ASC, id ASC
@@ -1651,20 +2692,47 @@ async def get_history(
                 session_uuid,
             )
 
-            history = [
-                {
-                    "role": r["role"],
-                    "content": r["content"],
-                    "message_type": (
-                        r["message_type"]
-                        or "text"
-                    ),
-                    "media_url": (
-                        r["media_url"]
-                    ),
-                }
-                for r in rows
-            ]
+            history = []
+
+            for r in rows:
+                exercise = None
+                raw_exercise = r["exercise_data"]
+
+                if raw_exercise:
+                    try:
+                        if isinstance(
+                            raw_exercise,
+                            str,
+                        ):
+                            exercise = json.loads(
+                                raw_exercise
+                            )
+                        elif isinstance(
+                            raw_exercise,
+                            dict,
+                        ):
+                            exercise = raw_exercise
+                    except Exception:
+                        exercise = None
+
+                if not isinstance(exercise, (dict, list)):
+                    exercise = None
+
+                history.append(
+                    {
+                        "id": r["id"],
+                        "role": r["role"],
+                        "content": r["content"],
+                        "message_type": (
+                            r["message_type"]
+                            or "text"
+                        ),
+                        "media_url": (
+                            r["media_url"]
+                        ),
+                        "exercise": exercise,
+                    }
+                )
 
             return {
                 "session_id": session_id_str,
