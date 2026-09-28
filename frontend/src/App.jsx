@@ -299,6 +299,30 @@ export default function App() {
     () => localStorage.getItem('translator_session_id') || null
   );
 
+  // ==========================================================
+  // Send welcome message on new session
+  // ==========================================================
+
+  useEffect(() => {
+    if (sessionId) {
+      return;
+    }
+
+    // Generate a new session ID
+    const newSessionId = 'temp_' + Date.now();
+    setSessionId(newSessionId);
+
+    // Save to localStorage so it persists
+    try {
+      localStorage.setItem(
+        'translator_session_id',
+        newSessionId
+      );
+    } catch {
+      // Ignore storage errors.
+    }
+  }, []);
+
   // ----------------------------------------------------------
   // UI
   // ----------------------------------------------------------

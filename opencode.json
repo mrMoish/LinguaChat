@@ -1,0 +1,18 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "freellmapi": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "FreeLLMAPI",
+      "options": {
+        "baseURL": "http://localhost:3001/v1",
+        "apiKey": "freellmapi-6b8f6a41d7c0365fd4d88b3bb548e6f077f2da578f14b4f2"
+      },
+      "models": {
+        "auto": {
+          "name": "FreeLLMAPI Auto"
+        }
+      }
+    }
+  }
+}

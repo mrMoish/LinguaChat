@@ -1651,6 +1651,30 @@ async def get_history(
                 session_uuid,
             )
 
+            if not rows:
+                await conn.execute(
+                    """
+                    INSERT INTO chat_history
+                    (session_id, role, content, message_type)
+                    VALUES ($1, 'assistant', $2, 'text')
+                    """,
+                    session_uuid,
+                    "Какой у вас уровень испанского?"
+                )
+                rows = await conn.fetch(
+                    """
+                    SELECT
+                        role,
+                        content,
+                        message_type,
+                        media_url
+                    FROM chat_history
+                    WHERE session_id = $1
+                    ORDER BY created_at ASC, id ASC
+                    """,
+                    session_uuid,
+                )
+
             history = [
                 {
                     "role": r["role"],
