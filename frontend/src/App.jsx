@@ -296,8 +296,33 @@ export default function App() {
   const [isLoadingMore, setIsLoadingMore] = useState(false);
 
   const [sessionId, setSessionId] = useState(
-    () => localStorage.getItem('translator_session_id') || null
+    () => {
+      const stored = localStorage.getItem('translator_session_id');
+      return stored || null;
+    }
   );
+
+  // ==========================================================
+  // Initialize new session with welcome message
+  // ==========================================================
+
+  useEffect(() => {
+    if (sessionId) {
+      return;
+    }
+
+    const newSessionId = 'temp_' + Date.now();
+    setSessionId(newSessionId);
+
+    try {
+      localStorage.setItem(
+        'translator_session_id',
+        newSessionId
+      );
+    } catch {
+      // Ignore storage errors.
+    }
+  }, [sessionId]);
 
   // ==========================================================
   // Send welcome message on new session
