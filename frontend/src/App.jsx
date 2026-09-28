@@ -132,11 +132,13 @@ async function idbSet(
 // ============================================================
 
 const PAGE_SIZE = 20;
-const STORAGE_VERSION = 'v2';
+const STORAGE_VERSION = 'v3';
 const CHAT_HISTORY_STORAGE_KEY =
   `translator_chat_history_${STORAGE_VERSION}`;
 const SESSION_STORAGE_KEY =
   `translator_session_id_${STORAGE_VERSION}`;
+const MATCHING_STATES_STORAGE_KEY =
+  `translator_matching_states_${STORAGE_VERSION}`;
 
 const WELCOME_MESSAGES = [
   'Я AI-переводчик, который также поможет тебе учить язык',
@@ -205,6 +207,29 @@ function loadCachedMessages() {
   }
 }
 
+function loadCachedMatchingStates() {
+  try {
+    const saved =
+      localStorage.getItem(
+        MATCHING_STATES_STORAGE_KEY
+      );
+
+    if (!saved) {
+      return {};
+    }
+
+    const parsed =
+      JSON.parse(saved);
+
+    return parsed && typeof parsed === 'object'
+      ? parsed
+      : {};
+
+  } catch {
+    return {};
+  }
+}
+
 
 function formatRecordingTime(
   seconds
@@ -231,6 +256,20 @@ function formatRecordingTime(
 }
 
 
+
+
+// ============================================================
+// Utility functions
+// ============================================================
+
+function matchingStateKey(
+  messageIndex,
+  exerciseIndex
+) {
+  return `${messageIndex}:${exerciseIndex}`;
+}
+
+
 // ============================================================
 // Welcome
 // ============================================================
@@ -243,8 +282,8 @@ function Welcome({
   onMatchingTermClick,
 }) {
   return (
-    <div className="welcome-message">
-      <div className="welcome-bubble message-bubble message-assistant">
+    <div className="message-row message-row-assistant">
+      <div className="message-bubble message-assistant">
         {texts.map((message) => (
           <div key={message}>{message}</div>
         ))}
@@ -557,10 +596,18 @@ function ExerciseArea({
       matchedTranslations: [],
       wrongTerm: null,
       wrongTranslation: null,
+      hasInteracted: false,
     };
+
+    // Restore matched pairs from exercise data after page reload
+    if (answered && safeMatchingState.matchedTerms.length === 0 && safeMatchingState.hasInteracted) {
+      safeMatchingState.matchedTerms = matchingPairs.map(p => p.term);
+      safeMatchingState.matchedTranslations = matchingPairs.map(p => p.translation);
+    }
 
     const hasInteraction =
       answered ||
+      safeMatchingState.hasInteracted ||
       safeMatchingState.selectedTerm ||
       safeMatchingState.selectedTranslation ||
       safeMatchingState.matchedTerms.length > 0 ||
@@ -586,30 +633,28 @@ function ExerciseArea({
       >
         <div className="exercise-question">
           {!isExpanded ? (
-            <>
+            <button
+              type="button"
+              className={`matching-pair-trigger ${
+                safeMatchingState.selectedTerm === firstPair.term
+                  ? 'matching-term-selected'
+                  : ''
+              } ${
+                safeMatchingState.wrongTerm === firstPair.term
+                  ? 'matching-term-shake'
+                  : ''
+              }`}
+              onClick={() => onMatchingTermClick(firstPair.term)}
+            >
               <span>Найди пару: </span>
-              <button
-                type="button"
-                className={`matching-term matching-term-inline ${
-                  safeMatchingState.selectedTerm === firstPair.term
-                    ? 'matching-term-selected'
-                    : ''
-                } ${
-                  safeMatchingState.wrongTerm === firstPair.term
-                    ? 'matching-term-shake'
-                    : ''
-                }`}
-                onClick={() => onMatchingTermClick(firstPair.term)}
-              >
-                {firstPair.term}
-              </button>
-            </>
+              <span>{firstPair.term}</span>
+            </button>
           ) : (
             'Найди пары'
           )}
         </div>
 
-        {answered && safeMatchingState.matchedTerms.length > 0 && (
+        {answered && (safeMatchingState.matchedTerms.length > 0 || safeMatchingState.hasInteracted) && (
           <div className="matching-pairs-found">
             {matchingPairs
               .filter((pair) =>
@@ -626,6 +671,20 @@ function ExerciseArea({
                   <span>{pair.translation}</span>
                 </div>
               ))}
+          </div>
+        )}
+
+        {answered && safeMatchingState.matchedTerms.length === 0 && (
+          <div className="matching-pairs-found">
+            {matchingPairs.map((pair) => (
+              <div
+                key={pair.term}
+                className="matching-pair-found"
+              >
+                <span>{pair.term}</span>
+                <span>{pair.translation}</span>
+              </div>
+            ))}
           </div>
         )}
 
@@ -859,7 +918,7 @@ export default function App() {
   const [
     matchingStates,
     setMatchingStates,
-  ] = useState({});
+  ] = useState(loadCachedMatchingStates);
 
   const prefetchedNextExercisesRef = useRef({});
   const prefetchInFlightRef = useRef({});
@@ -1134,6 +1193,19 @@ export default function App() {
     }
   }, [allMessages]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        MATCHING_STATES_STORAGE_KEY,
+        JSON.stringify(
+          matchingStates
+        )
+      );
+    } catch {
+      // Ignore storage errors.
+    }
+  }, [matchingStates]);
+
 
   // ==========================================================
   // Visible messages
@@ -1173,7 +1245,7 @@ export default function App() {
       return;
     }
 
-    let cancelled = false;
+    const abortController = new AbortController();
 
     async function loadHistory() {
       setIsSyncingHistory(true);
@@ -1189,6 +1261,7 @@ export default function App() {
                 'X-Session-Id':
                   sessionId,
               },
+              signal: abortController.signal,
             }
           );
 
@@ -1201,7 +1274,7 @@ export default function App() {
         const data =
           await response.json();
 
-        if (cancelled) {
+        if (abortController.signal.aborted) {
           return;
         }
 
@@ -1265,6 +1338,10 @@ export default function App() {
               exerciseCorrect:
                 null,
             });
+          }
+
+          if (abortController.signal.aborted) {
+            return;
           }
 
           setAllMessages(
@@ -1375,19 +1452,19 @@ export default function App() {
         );
 
       } finally {
-
-        if (!cancelled) {
-          setIsSyncingHistory(
-            false
-          );
+        if (!abortController.signal.aborted) {
+          setIsSyncingHistory(false);
         }
       }
     }
 
-    loadHistory();
+    const timerId = setTimeout(() => {
+      loadHistory();
+    }, 0);
 
     return () => {
-      cancelled = true;
+      clearTimeout(timerId);
+      abortController.abort();
     };
 
   }, [
@@ -1416,6 +1493,8 @@ export default function App() {
     });
 
   }, []);
+
+  // Scroll to matching exercise when it expands
 
 
   // ==========================================================
@@ -1868,6 +1947,28 @@ export default function App() {
           exerciseCorrect: null,
         },
       ]);
+      setAllMessages((messages) => {
+        const updated = [...messages];
+        const welcomeIndex = updated.findIndex(
+          (msg) => msg.role === 'assistant' && msg.content === 'Я AI-переводчик, который также поможет тебе учить язык'
+        );
+        if (welcomeIndex !== -1) {
+          updated[welcomeIndex] = {
+            ...updated[welcomeIndex],
+            exercises: [
+              ...updated[welcomeIndex].exercises,
+              {
+                ...prefetchedExercise,
+                isGeneratedExercise: true,
+                exerciseAnswered: false,
+                exerciseUserAnswer: null,
+                exerciseCorrect: null,
+              },
+            ],
+          };
+        }
+        return updated;
+      });
       setIsLoadingNextExercise(false);
       return;
     }
@@ -1913,11 +2014,34 @@ export default function App() {
           ...items,
           {
             ...data.exercise,
+            isGeneratedExercise: true,
             exerciseAnswered: false,
             exerciseUserAnswer: null,
             exerciseCorrect: null,
           },
         ]);
+        setAllMessages((messages) => {
+          const updated = [...messages];
+          const welcomeIndex = updated.findIndex(
+            (msg) => msg.role === 'assistant' && msg.content === 'Я AI-переводчик, который также поможет тебе учить язык'
+          );
+          if (welcomeIndex !== -1) {
+            updated[welcomeIndex] = {
+              ...updated[welcomeIndex],
+              exercises: [
+                ...updated[welcomeIndex].exercises,
+                {
+                  ...data.exercise,
+                  isGeneratedExercise: true,
+                  exerciseAnswered: false,
+                  exerciseUserAnswer: null,
+                  exerciseCorrect: null,
+                },
+              ],
+            };
+          }
+          return updated;
+        });
       }
     } catch (error) {
       console.error(
@@ -1927,13 +2051,6 @@ export default function App() {
     } finally {
       setIsLoadingNextExercise(false);
     }
-  }
-
-  function matchingStateKey(
-    messageIndex,
-    exerciseIndex
-  ) {
-    return `${messageIndex}:${exerciseIndex}`;
   }
 
   async function prefetchNextExercise(
@@ -2029,6 +2146,7 @@ export default function App() {
       matchedTranslations: [],
       wrongTerm: null,
       wrongTranslation: null,
+      hasInteracted: false,
     };
 
     const hasStarted = Boolean(
@@ -2042,7 +2160,7 @@ export default function App() {
     if (!hasStarted) {
       void prefetchNextExercise(
         messageIndex,
-        message?.content || WELCOME_MESSAGES.join(' '),
+        message?.content || 'Я AI-переводчик, который также поможет тебе учить язык',
         messageIndex > 0
           ? allMessages[messageIndex - 1]?.content || ''
           : '',
@@ -2068,7 +2186,19 @@ export default function App() {
       ...current,
       wrongTerm: null,
       wrongTranslation: null,
+      hasInteracted: true,
     };
+
+    if (!current.hasInteracted) {
+      void prefetchNextExercise(
+        messageIndex,
+        message?.content || 'Я AI-переводчик, который также поможет тебе учить язык',
+        messageIndex > 0
+          ? allMessages[messageIndex - 1]?.content || ''
+          : '',
+        exercise
+      );
+    }
 
     if (side === 'term') {
       next.selectedTerm = value;
@@ -2151,6 +2281,115 @@ export default function App() {
       ...states,
       [key]: next,
     }));
+  }
+
+  function handleMatchingOptionClick(
+    messageIndex,
+    exerciseIndex,
+    option
+  ) {
+    const message =
+      messageIndex === -2
+        ? null
+        : allMessages[messageIndex];
+    const exercise =
+      messageIndex === -2
+        ? welcomeExerciseItems[exerciseIndex]
+        : getExerciseItems(message)[exerciseIndex];
+    const pairs = getMatchingPairs(exercise);
+
+    if (!exercise || pairs.length < 2) {
+      return;
+    }
+
+    const key = matchingStateKey(
+      messageIndex,
+      exerciseIndex
+    );
+    const current = matchingStates[key] || {
+      selectedTerm: null,
+      selectedTranslation: null,
+      matchedTerms: [],
+      matchedTranslations: [],
+      wrongTerm: null,
+      wrongTranslation: null,
+      hasInteracted: false,
+    };
+
+    const next = {
+      ...current,
+      hasInteracted: true,
+      wrongTerm: null,
+      wrongTranslation: null,
+    };
+
+    if (!current.hasInteracted) {
+      void prefetchNextExercise(
+        messageIndex,
+        message?.content || 'Я AI-переводчик, который также поможет тебе учить язык',
+        messageIndex > 0
+          ? allMessages[messageIndex - 1]?.content || ''
+          : '',
+        exercise
+      );
+    }
+
+    const pair = pairs.find(
+      (item) => item.translation === option
+    );
+
+    if (pair && !next.matchedTerms.includes(pair.term)) {
+      next.matchedTerms = [
+        ...next.matchedTerms,
+        pair.term,
+      ];
+      next.matchedTranslations = [
+        ...next.matchedTranslations,
+        option,
+      ];
+
+      setMatchingStates((states) => ({
+        ...states,
+        [key]: next,
+      }));
+
+      const completed =
+        next.matchedTerms.length === pairs.length;
+      if (completed) {
+        if (messageIndex === -2) {
+          void handleWelcomeExerciseAnswer(
+            'matching_complete'
+          );
+        } else {
+          void handleExerciseAnswer(
+            messageIndex,
+            exerciseIndex,
+            'matching_complete'
+          );
+        }
+      }
+    } else {
+      next.wrongTerm = pair?.term || null;
+      next.wrongTranslation = option;
+      next.selectedTerm = null;
+      next.selectedTranslation = null;
+
+      setMatchingStates((states) => ({
+        ...states,
+        [key]: next,
+      }));
+
+      window.setTimeout(() => {
+        setMatchingStates((states) => ({
+          ...states,
+          [key]: {
+            ...states[key],
+            wrongTerm: null,
+            wrongTranslation: null,
+          },
+        }));
+      }, 500);
+    }
   }
 
   async function requestNextExercise(
@@ -2404,6 +2643,24 @@ export default function App() {
       allMessages.length === 0
         ? welcomeExerciseItems
         : [];
+
+    if (allMessages.length === 0) {
+      const welcomeText = 'Я AI-переводчик, который также поможет тебе учить язык';
+      const welcomeMessage = {
+        role: 'assistant',
+        content: welcomeText,
+        message_type: 'text',
+        image: null,
+        audio: null,
+        media_url: null,
+        exercise: null,
+        exerciseAnswered: false,
+        exerciseUserAnswer: null,
+        exerciseCorrect: null,
+        exercises: welcomeExerciseItems,
+      };
+      setAllMessages([welcomeMessage]);
+    }
 
     isNearBottomRef.current =
       true;
@@ -3045,15 +3302,21 @@ export default function App() {
       )
     ];
   const matchingHasInteraction = Boolean(
+    activeMatchingState?.hasInteracted ||
     activeMatchingState?.selectedTerm ||
     activeMatchingState?.selectedTranslation ||
     activeMatchingState?.matchedTerms?.length ||
     activeMatchingState?.wrongTerm ||
     activeMatchingState?.wrongTranslation
   );
+  const showAllMatchingOptions =
+    activeMatchingPairs.length > 0 &&
+    (matchingHasInteraction ||
+      activeMatchingState?.wrongTerm ||
+      activeMatchingState?.wrongTranslation);
   const activeExerciseOptions =
     activeMatchingPairs.length > 0
-      ? (matchingHasInteraction
+      ? (showAllMatchingOptions
           ? activeMatchingTranslations
           : getInitialMatchingOptions(activeExercise)
         )
@@ -3063,6 +3326,47 @@ export default function App() {
   // ==========================================================
   // Render
   // ==========================================================
+
+  // Scroll to active matching exercise (must be after its deps are declared)
+  useEffect(() => {
+    if (
+      activeExerciseIndex === -1 ||
+      activeMatchingPairs.length === 0
+    ) {
+      return;
+    }
+
+    const isExpanded =
+      matchingHasInteraction ||
+      activeExercise?.isGeneratedExercise;
+
+    if (!isExpanded) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      const exerciseElements = document.querySelectorAll(
+        '.matching-exercise-active'
+      );
+      if (exerciseElements.length > 0) {
+        const lastElement =
+          exerciseElements[
+            exerciseElements.length - 1
+          ];
+        lastElement.scrollIntoView({
+          behavior: 'smooth',
+          block: 'center',
+        });
+      }
+    }, 100);
+
+    return () => clearTimeout(timer);
+  }, [
+    activeExerciseIndex,
+    activeMatchingPairs.length,
+    matchingHasInteraction,
+    activeExercise?.isGeneratedExercise,
+  ]);
 
   return (
     <div className="app">
@@ -3115,12 +3419,9 @@ export default function App() {
         className="chat-container"
       >
 
-        {visibleMessages.length ===
-          0 && (
+        {visibleMessages.length === 0 && (
           <Welcome
-            texts={
-              WELCOME_MESSAGES
-            }
+            texts={WELCOME_MESSAGES}
             exercises={welcomeExerciseItems}
             isLoadingNextExercise={
               isLoadingNextExercise
@@ -3348,11 +3649,12 @@ export default function App() {
 
                 {msg.role ===
                   'assistant' &&
-                  getExerciseItems(msg)
+                  (msg.exercises || getExerciseItems(msg))
                     .filter(
                       (exercise) =>
                         exercise.exerciseAnswered ||
-                        globalIndex === latestExerciseIndex
+                        globalIndex === latestExerciseIndex ||
+                        exercise.isGeneratedExercise
                     )
                     .map(
                     (exercise, exerciseIndex) => (
@@ -3431,60 +3733,70 @@ export default function App() {
 
       </main>
 
-      {activeExerciseIndex !== -1 && !(
-        activeMatchingPairs.length > 0 &&
-        (matchingHasInteraction || activeExercise?.isGeneratedExercise)
-      ) && (
-        <div className="exercise-actions">
-          <div className="exercise-actions-inner">
-            {activeMatchingPairs.length > 0 || activeExerciseOptions.length === 2
-              ? activeExerciseOptions.map((option) => {
-                  const matchingState =
-                    matchingStates[
-                      matchingStateKey(
-                        activeExerciseIndex,
-                        activeExerciseIndex === -2
-                          ? welcomeExerciseItems.length - 1
-                          : activeExerciseItemIndex
-                      )
-                    ];
-                  const isMatchedTranslation =
-                    matchingState?.matchedTranslations?.includes(
-                      option
-                    );
 
-                  return (
-                    <button
-                      key={option}
-                      type="button"
-                      className="exercise-button"
-                      disabled={isMatchedTranslation}
-                      onClick={() =>
-                        getMatchingPairs(activeExercise).length > 0
-                          ? handleMatchingClick(
-                              activeExerciseIndex,
-                              activeExerciseIndex === -2
-                                ? welcomeExerciseItems.length - 1
-                                : activeExerciseItemIndex,
-                              'translation',
-                              option
-                            )
-                          : activeExerciseIndex === -2
-                          ? handleWelcomeExerciseAnswer(
-                              option
-                            )
-                          : handleExerciseAnswer(
-                              activeExerciseIndex,
-                              activeExerciseItemIndex,
-                              option
-                            )
-                      }
-                    >
-                      {option}
-                    </button>
-                  );
-                })
-              : (
+      {/* ======================================================
+          INPUT
+          ====================================================== */}
+
+      <div className="input-area">
+
+        {activeExerciseIndex !== -1 && !(
+          activeMatchingPairs.length > 0 &&
+          (matchingHasInteraction || activeExercise?.isGeneratedExercise)
+        ) && (
+          <div className="exercise-actions">
+            <div className="exercise-actions-inner">
+              {activeMatchingPairs.length > 0 || activeExerciseOptions.length === 2
+                ? activeExerciseOptions.map((option) => {
+                    const matchingState =
+                      matchingStates[
+                        matchingStateKey(
+                          activeExerciseIndex,
+                          activeExerciseIndex === -2
+                            ? welcomeExerciseItems.length - 1
+                            : activeExerciseItemIndex
+                        )
+                      ];
+                    const isMatchedTranslation =
+                      matchingState?.matchedTranslations?.includes(
+                        option
+                      );
+
+                    return (
+                      <button
+                        key={option}
+                        type="button"
+                        className={`exercise-button ${
+                          isMatchedTranslation
+                            ? 'exercise-button-matched'
+                            : ''
+                        }`}
+                        disabled={isMatchedTranslation}
+                        onClick={() =>
+                          getMatchingPairs(activeExercise).length > 0
+                            ? handleMatchingOptionClick(
+                                activeExerciseIndex,
+                                activeExerciseIndex === -2
+                                  ? welcomeExerciseItems.length - 1
+                                  : activeExerciseItemIndex,
+                                option
+                              )
+                            : activeExerciseIndex === -2
+                            ? handleWelcomeExerciseAnswer(
+                                option
+                              )
+                            : handleExerciseAnswer(
+                                activeExerciseIndex,
+                                activeExerciseItemIndex,
+                                option
+                              )
+                        }
+                      >
+                        {option}
+                      </button>
+                    );
+                  })
+                : (
                 <>
                   <button
                     type="button"
@@ -3503,7 +3815,6 @@ export default function App() {
                   >
                     Да
                   </button>
-
                   <button
                     type="button"
                     className="exercise-button"
@@ -3521,39 +3832,49 @@ export default function App() {
                   >
                     Нет
                   </button>
+                  <button
+                    type="button"
+                    className="exercise-button"
+                    onClick={() =>
+                      activeExerciseIndex === -2
+                        ? handleWelcomeExerciseAnswer(
+                            'already_know'
+                          )
+                        : handleExerciseAnswer(
+                            activeExerciseIndex,
+                            activeExerciseItemIndex,
+                            'already_know'
+                          )
+                    }
+                  >
+                    Я это уже знаю
+                  </button>
                 </>
               )}
 
-            {activeExerciseOptions.length !== 2 &&
-              learnerLevel === 'unknown' && (
-              <button
-                type="button"
-                className="exercise-button"
-                onClick={() =>
-                  activeExerciseIndex === -2
-                    ? handleWelcomeExerciseAnswer(
-                        'already_know'
-                      )
-                    : handleExerciseAnswer(
-                        activeExerciseIndex,
-                        activeExerciseItemIndex,
-                        'already_know'
-                      )
-                }
-              >
-                Я это уже знаю
-              </button>
-            )}
+              {activeExerciseOptions.length !== 2 &&
+                learnerLevel === 'unknown' && (
+                <button
+                  type="button"
+                  className="exercise-button"
+                  onClick={() =>
+                    activeExerciseIndex === -2
+                      ? handleWelcomeExerciseAnswer(
+                          'already_know'
+                        )
+                      : handleExerciseAnswer(
+                          activeExerciseIndex,
+                          activeExerciseItemIndex,
+                          'already_know'
+                        )
+                  }
+                >
+                  Я это уже знаю
+                </button>
+              )}
+            </div>
           </div>
-        </div>
-      )}
-
-
-      {/* ======================================================
-          INPUT
-          ====================================================== */}
-
-      <div className="input-area">
+        )}
 
         <div className="input-container">
 
