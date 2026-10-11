@@ -445,10 +445,6 @@ export default function App() {
   // ==========================================================
 
   useEffect(() => {
-    if (!sessionId) {
-      return;
-    }
-
     let cancelled = false;
 
     async function loadHistory() {
@@ -456,9 +452,10 @@ export default function App() {
 
       try {
         const response = await fetch(
-          `${backendUrl}/api/history?session_id=${encodeURIComponent(
-            sessionId
-          )}`
+          `${backendUrl}/api/history`,
+          {
+            credentials: 'include',
+          }
         );
 
         if (!response.ok) {
@@ -947,17 +944,11 @@ export default function App() {
         );
       }
 
-      if (sessionId) {
-        formData.append(
-          'session_id',
-          sessionId
-        );
-      }
-
       const response = await fetch(
         `${backendUrl}/api/message`,
         {
           method: 'POST',
+          credentials: 'include',
           body: formData,
         }
       );

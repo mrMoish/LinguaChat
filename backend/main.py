@@ -11,6 +11,7 @@ from fastapi import (
     FastAPI,
     HTTPException,
     Request,
+    Response,
     UploadFile,
     File,
     Form,
@@ -40,7 +41,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origin_regex=r"https?://.*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -189,24 +190,48 @@ async def shutdown():
 # SESSION
 # ============================================================
 
-def get_session_id(
-    req: Request,
-    fallback_session_id: Optional[str] = None,
-):
-    """
-    Приоритет:
+SESSION_COOKIE_NAME = "session_id"
 
-    1. X-Session-Id header
-    2. session_id из Form/query
-    3. новый UUID
-    """
 
-    return (
-        req.headers.get("X-Session-Id")
-        or fallback_session_id
-        or req.query_params.get("session_id")
-        or str(uuid.uuid4())
+def get_session_id_from_cookie(req: Request) -> Optional[uuid.UUID]:
+    cookie_val = req.cookies.get(SESSION_COOKIE_NAME)
+    if cookie_val:
+        try:
+            return uuid.UUID(cookie_val)
+        except ValueError:
+            return None
+    return None
+
+
+def get_or_create_session(req: Request) -> tuple[uuid.UUID, bool]:
+    session_id = get_session_id_from_cookie(req)
+    if session_id is not None:
+        return session_id, False
+    return uuid.uuid4(), True
+
+
+def set_session_cookie(response: Response, session_id: uuid.UUID, req: Request):
+    forwarded_proto = req.headers.get("x-forwarded-proto", "")
+    is_secure = req.url.scheme == "https" or "https" in forwarded_proto.lower()
+    samesite = "none" if is_secure else "lax"
+
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=str(session_id),
+        httponly=True,
+        samesite=samesite,
+        secure=is_secure,
+        max_age=31536000,
+        path="/",
     )
+
+
+@app.get("/api/session")
+async def get_session_info(req: Request, response: Response):
+    session_uuid, is_new = get_or_create_session(req)
+    if is_new:
+        set_session_cookie(response, session_uuid, req)
+    return {"session_id": str(session_uuid)}
 
 
 # ============================================================
@@ -1307,12 +1332,9 @@ async def process_text(
 @app.post("/api/message")
 async def message(
     req: Request,
+    response: Response,
     text: Optional[str] = Form(None),
     file: UploadFile = File(None),
-    session_id_form: Optional[str] = Form(
-        None,
-        alias="session_id",
-    ),
 ):
 
     if not OPENROUTER_API_KEY:
@@ -1333,23 +1355,10 @@ async def message(
     # SESSION
     # --------------------------------------------------------
 
-    session_id_str = get_session_id(
-        req,
-        session_id_form,
-    )
-
-    try:
-
-        session_id = uuid.UUID(
-            session_id_str
-        )
-
-    except ValueError:
-
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid session ID",
-        )
+    session_id, is_new = get_or_create_session(req)
+    if is_new:
+        set_session_cookie(response, session_id, req)
+    session_id_str = str(session_id)
 
     # --------------------------------------------------------
     # FILE
@@ -1612,26 +1621,13 @@ async def message(
 @app.get("/api/history")
 async def get_history(
     req: Request,
-    session_id: Optional[str] = None,
+    response: Response,
 ):
 
-    session_id_str = get_session_id(
-        req,
-        session_id,
-    )
-
-    try:
-
-        session_uuid = uuid.UUID(
-            session_id_str
-        )
-
-    except ValueError:
-
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid session ID",
-        )
+    session_uuid, is_new = get_or_create_session(req)
+    if is_new:
+        set_session_cookie(response, session_uuid, req)
+    session_id_str = str(session_uuid)
 
     if db_pool:
 
